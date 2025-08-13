@@ -48,11 +48,6 @@ function normalizeDateString(d: string | Date): string | null {
 
 // --- Обработчики HTTP-методов ---
 
-/**
- * GET - Получение смен для отображения в календаре.
- * Умеет фильтровать по диапазону дат и по пользователю.
- * Логика взята из /api/slots и улучшена.
- */
 export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url);
@@ -81,7 +76,6 @@ export async function GET(request: NextRequest) {
     }
     if (endStr) {
       params.push(endStr);
-      // Важно: `<` а не `<=`, чтобы не включать следующий день
       where.push(`s.shift_date < $${params.length}`);
     }
 
@@ -93,11 +87,9 @@ export async function GET(request: NextRequest) {
       params.push(vid);
       where.push(`s.user_id = $${params.length}`);
     } else if (currentUser) {
-      // Если смотрим свой календарь, показываем свои смены + доступные для взятия
       params.push(currentUser.id);
       where.push(`(s.user_id = $${params.length} OR s.status = 'available')`);
     } else {
-      // Если неавторизованный пользователь, показываем только доступные
       where.push(`s.status = 'available'`);
     }
 
@@ -116,10 +108,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-/**
- * POST - Создание новой смены или взятие существующей свободной.
- * Логика взята из /api/slots.
- */
 export async function POST(request: NextRequest) {
   try {
     const currentUser = await getUserFromSession();
@@ -142,7 +130,6 @@ export async function POST(request: NextRequest) {
     const shiftCode = `${startTime}-${endTime}`;
     const shiftStatus = status && typeof status === 'string' ? status : 'pending';
 
-    // Проверяем, существует ли уже такой слот
     const existing = await pool.query(
       `SELECT * FROM shifts WHERE shift_date = $1 AND shift_code = $2`,
       [dateStr, shiftCode]
@@ -150,11 +137,9 @@ export async function POST(request: NextRequest) {
 
     if (existing.rowCount > 0) {
       const slot = existing.rows[0];
-      // Если это уже наш слот, ничего не делаем
       if (slot.user_id === currentUser.id) {
         return NextResponse.json(slot);
       }
-      // Если слот свободен, занимаем его
       if (!slot.user_id || slot.status === 'available') {
         const updated = await pool.query(
           `UPDATE shifts
@@ -165,11 +150,9 @@ export async function POST(request: NextRequest) {
         );
         return NextResponse.json(updated.rows[0]);
       }
-      // Если слот занят кем-то другим
       return NextResponse.json({ error: 'Slot already taken' }, { status: 409 });
     }
 
-    // Если слота не существует, создаем новый
     const insert = await pool.query(
       `INSERT INTO shifts (user_id, shift_date, day_of_week, shift_code, status)
        VALUES ($1, $2::date, extract(dow from $2::date)::int + 1, $3, $4)
@@ -180,18 +163,18 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(insert.rows[0], { status: 201 });
   } catch (err) {
     console.error('[POST /api/shifts] error', err);
-    // Обработка уникального констрейнта
-    if (err.code === '23505') {
+    
+    // --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
+    // Проверяем, что err - это объект с нужным нам свойством 'code'
+    if (err && typeof err === 'object' && 'code' in err && err.code === '23505') {
        return NextResponse.json({ error: 'A shift with this date and time already exists.' }, { status: 409 });
     }
+    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-/**
- * PUT - Обновление существующей смены.
- * Логика взята из /api/slots.
- */
 export async function PUT(request: NextRequest) {
   try {
     const currentUser = await getUserFromSession();
@@ -256,11 +239,6 @@ export async function PUT(request: NextRequest) {
   }
 }
 
-
-/**
- * DELETE — Удаление смены.
- * Поддерживает удаление по id (или alias slotId) или по дате.
- */
 export async function DELETE(request: NextRequest) {
   try {
     const currentUser = await getUserFromSession();
@@ -269,7 +247,6 @@ export async function DELETE(request: NextRequest) {
     }
 
     const url = new URL(request.url);
-    // Принимаем 'id' или 'slotId' для совместимости
     const idParam = url.searchParams.get('id') || url.searchParams.get('slotId');
     const dateParam = url.searchParams.get('date');
 
@@ -289,7 +266,6 @@ export async function DELETE(request: NextRequest) {
       }
       
       const slot = existing.rows[0];
-      // Удалять может только владелец смены
       if (slot.user_id !== currentUser.id) {
         return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
       }
@@ -303,7 +279,6 @@ export async function DELETE(request: NextRequest) {
       if (!dateStr) {
         return NextResponse.json({ error: 'Invalid date' }, { status: 400 });
       }
-      // Удаляем все смены текущего юзера за указанную дату
       const res = await pool.query(
         'DELETE FROM shifts WHERE shift_date = $1 AND user_id = $2 RETURNING id',
         [dateStr, currentUser.id]

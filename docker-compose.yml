@@ -1,0 +1,20 @@
+# docker-compose.yml
+
+services:
+  db:
+    image: postgres:15
+    container_name: lavka_db_v2
+    restart: always
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=lavka_user
+      - POSTGRES_PASSWORD=a_brand_new_password_2025
+      - POSTGRES_DB=schedule_db
+    volumes:
+      # --- ВРЕМЕННО ОТКЛЮЧАЕМ АВТОМАТИЧЕСКИЙ ЗАПУСК ---
+      # - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql
+      - pgdata_v2:/var/lib/postgresql/data
+
+volumes:
+  pgdata_v2:

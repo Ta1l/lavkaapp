@@ -27,7 +27,7 @@ async function getUserFromSession(): Promise<User | null> {
       [parsed.id]
     );
 
-    if (res.rowCount === 0) return null;
+    if ((res?.rowCount ?? 0) === 0) return null;
     return res.rows[0];
   } catch (err) {
     console.error('[getUserFromSession] error', err);
@@ -52,6 +52,7 @@ export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url);
     const viewedUserIdParam = url.searchParams.get('userId');
+    // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
     const startParam = url.searchParams.get('start');
     const endParam = url.searchParams.get('end');
 
@@ -135,7 +136,7 @@ export async function POST(request: NextRequest) {
       [dateStr, shiftCode]
     );
 
-    if (existing.rowCount > 0) {
+    if ((existing?.rowCount ?? 0) > 0) {
       const slot = existing.rows[0];
       if (slot.user_id === currentUser.id) {
         return NextResponse.json(slot);
@@ -164,12 +165,9 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     console.error('[POST /api/shifts] error', err);
     
-    // --- ИЗМЕНЕНИЕ ЗДЕСЬ ---
-    // Проверяем, что err - это объект с нужным нам свойством 'code'
     if (err && typeof err === 'object' && 'code' in err && err.code === '23505') {
        return NextResponse.json({ error: 'A shift with this date and time already exists.' }, { status: 409 });
     }
-    // --- КОНЕЦ ИЗМЕНЕНИЯ ---
 
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
@@ -190,7 +188,7 @@ export async function PUT(request: NextRequest) {
 
     const existing = await pool.query('SELECT * FROM shifts WHERE id = $1', [id]);
 
-    if (existing.rowCount === 0) {
+    if ((existing?.rowCount ?? 0) === 0) {
       return NextResponse.json({ error: 'Shift not found' }, { status: 404 });
     }
 
@@ -261,7 +259,7 @@ export async function DELETE(request: NextRequest) {
       }
       
       const existing = await pool.query('SELECT * FROM shifts WHERE id = $1', [id]);
-      if (existing.rowCount === 0) {
+      if ((existing?.rowCount ?? 0) === 0) {
         return NextResponse.json({ error: 'Shift not found' }, { status: 404 });
       }
       

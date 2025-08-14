@@ -1,7 +1,6 @@
 // src/app/api/auth/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
-// [ИЗМЕНЕНО] - Импортируем 'pool' напрямую, а не несуществующую функцию 'getDbPool'
 import { pool } from '@/lib/db';
 import { cookies } from 'next/headers';
 import { User } from '@/types/shifts';
@@ -14,32 +13,36 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'Не все поля заполнены' }, { status: 400 });
         }
 
-        // [ИЗМЕНЕНО] - 'pool' уже является готовым объектом, его не нужно вызывать как функцию.
-        // Строка 'const pool = getDbPool();' была удалена.
         const existingUser = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-
         let user: User | null = null;
 
         if (action === 'register') {
-            if (existingUser.rowCount > 0) {
+            // Проверяем, существует ли уже такой пользователь
+            // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+            if ((existingUser?.rowCount ?? 0) > 0) {
                 return NextResponse.json({ error: 'Пользователь с таким именем уже существует' }, { status: 409 });
             }
-            // Здесь должна быть логика хеширования пароля, но пока оставляем как есть
+            // Если нет, создаём нового (здесь должна быть логика хеширования пароля)
             const newUser = await pool.query(
                 'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, full_name',
                 [username, password]
             );
             user = newUser.rows[0];
+
         } else if (action === 'login') {
-            if (existingUser.rowCount === 0) {
+            // Проверяем, существует ли пользователь
+            // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+            if ((existingUser?.rowCount ?? 0) === 0) {
                 return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
             }
-            // Здесь должна быть логика сравнения хеша пароля, но пока оставляем как есть
+            // Проверяем пароль (здесь должно быть сравнение хешей)
             if (existingUser.rows[0].password !== password) {
                 return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
             }
             user = existingUser.rows[0];
+
         } else {
+            // Если действие не 'register' и не 'login'
             return NextResponse.json({ error: 'Неверное действие' }, { status: 400 });
         }
 
@@ -56,6 +59,7 @@ export async function POST(request: NextRequest) {
         }
 
         return NextResponse.json({ error: 'Произошла непредвиденная ошибка' }, { status: 500 });
+
     } catch (error) {
         console.error('[API Auth Error]', error);
         return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });

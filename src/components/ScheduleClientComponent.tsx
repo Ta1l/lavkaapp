@@ -9,7 +9,7 @@ import Main from './Main';
 import Lower from './Lower';
 import AddSlotModal from './AddSlotModal';
 import { getCalendarWeeks } from '@/lib/dateUtils';
-import { format } from 'date-fns';
+import { format, addDays } from 'date-fns';
 
 type Props = {
   initialWeekDays: Day[];
@@ -17,6 +17,18 @@ type Props = {
   currentUser: User | null;
   isOwner: boolean;
 };
+
+// Вспомогательная функция для обработки ошибок
+function getErrorMessage(error: unknown): string {
+    if (error instanceof Error) {
+        return error.message;
+    }
+    if (typeof error === 'string' && error.length > 0) {
+        return error;
+    }
+    return 'Произошла неизвестная ошибка.';
+}
+
 
 export default function ScheduleClientComponent({ initialWeekDays, initialOffset, currentUser, isOwner }: Props) {
   const router = useRouter();
@@ -68,7 +80,6 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
         startTime,
         endTime,
       };
-      // Всегда обращаемся к /api/shifts
       const res = await fetch('/api/shifts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -80,15 +91,15 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
         throw new Error(body.error || 'Не удалось создать слот');
       }
       
-      refreshData(); // Обновляем данные с сервера для полной синхронизации
+      refreshData();
 
     } catch (err) {
       console.error('[Client] handleModalDone error:', err);
-      alert(err.message);
+      // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+      alert(getErrorMessage(err));
     } finally {
       setIsModalOpen(false);
       setSelectedDay(null);
-      // setLoading(false) вызовется после router.refresh()
     }
   };
 
@@ -100,7 +111,6 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
         startTime: slot.startTime,
         endTime: slot.endTime,
       };
-      // Запрос на "взятие" слота - это POST с данными существующего слота
       const res = await fetch('/api/shifts', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -113,7 +123,8 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
       refreshData();
     } catch (err) {
       console.error('[Client] handleTakeSlot error:', err);
-      alert(err.message);
+      // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+      alert(getErrorMessage(err));
       setLoading(false);
     }
   };
@@ -121,7 +132,6 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
   const handleReleaseSlot = async (day: Day, slotId: number) => {
     setLoading(true);
     try {
-      // Для удаления используем id
       const res = await fetch(`/api/shifts?id=${slotId}`, {
         method: 'DELETE',
       });
@@ -135,7 +145,8 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
 
     } catch (err) {
       console.error('[Client] handleReleaseSlot error:', err);
-      alert(err.message);
+      // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+      alert(getErrorMessage(err));
       setLoading(false);
     }
   };
@@ -157,7 +168,8 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
       refreshData();
     } catch (err) {
       console.error('[Client] handleDeleteDaySlots error:', err);
-      alert(err.message);
+      // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
+      alert(getErrorMessage(err));
       setLoading(false);
     }
   };

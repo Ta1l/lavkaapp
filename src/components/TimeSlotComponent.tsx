@@ -25,13 +25,13 @@ export default function TimeSlotComponent({
 }: TimeSlotComponentProps) {
 
     // Определяем состояния слота
-    const isSlotAvailable = slot.status === 'available' || slot.user_id === null;
+    const isSlotAvailable = slot.user_id === null;
     const isMySlot = slot.user_id === currentUserId && currentUserId !== null;
     const isTakenByOther = slot.user_id !== null && !isMySlot;
 
-    // Ключевое условие: можно ли занять этот слот?
-    // Только если он свободен И мы НЕ являемся владельцем этого расписания.
-    const canBeTaken = isSlotAvailable && !isOwner && currentUser !== null;
+    // [ИСПРАВЛЕНО] Ключевое условие: можно ли занять этот слот?
+    // Только если он свободен И мы являемся владельцем этого расписания.
+    const canBeTaken = isSlotAvailable && isOwner;
 
     const handleClick = (e: React.MouseEvent) => {
         e.stopPropagation();
@@ -47,8 +47,8 @@ export default function TimeSlotComponent({
                 "w-full h-[35px] rounded-[20px] flex items-center justify-between px-3 transition-colors relative",
                 {
                     "bg-[#353333]": isSlotAvailable,
-                    "cursor-pointer hover:bg-[#4a90e2]": canBeTaken, // Интерактивность только если можно занять
-                    "cursor-default": !canBeTaken, // Статичный курсор во всех остальных случаях
+                    "cursor-pointer hover:bg-[#404040]": canBeTaken, // Интерактивность только если можно занять
+                    "cursor-default": !canBeTaken && isSlotAvailable, // Статичный курсор для свободных слотов на чужой странице
                     "bg-blue-800": isMySlot, // Мои слоты
                     "bg-gray-700 opacity-70": isTakenByOther, // Слоты, занятые другими
                 }
@@ -66,6 +66,7 @@ export default function TimeSlotComponent({
                 </div>
             )}
             
+            {/* Надпись "Свободен" показывается на свободных слотах на ЧУЖИХ страницах */}
             {isSlotAvailable && !isOwner && (
                  <div className="text-gray-300 text-xs font-light">
                     Свободен

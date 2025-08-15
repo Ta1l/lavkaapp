@@ -13,6 +13,8 @@ export default function AuthPage() {
     const handleSubmit = async (action: 'login' | 'register') => {
         setIsLoading(true);
         setError(null);
+        console.clear(); // Очищаем консоль для чистоты эксперимента
+        console.log(`[CLIENT LOG] Начинаем отправку. Действие: "${action}", Имя: "${username}"`);
 
         try {
             const response = await fetch('/api/auth', {
@@ -21,19 +23,26 @@ export default function AuthPage() {
                 body: JSON.stringify({ username, password, action }),
             });
 
+            console.log('[CLIENT LOG] Получен ответ от сервера. Статус:', response.status);
+            console.log('[CLIENT LOG] response.ok:', response.ok);
+
             const data = await response.json();
+            console.log('[CLIENT LOG] Тело ответа (data):', data);
 
             if (!response.ok) {
+                console.log('[CLIENT LOG] Ответ НЕ успешный (status не 2xx). Выбрасываем ошибку.');
                 throw new Error(data.error || 'Произошла ошибка');
             }
 
-            // В случае успеха перенаправляем на страницу расписания
+            console.log('[CLIENT LOG] Ответ успешный. Перенаправление на /schedule/0...');
             router.push('/schedule/0');
-            router.refresh(); // Обновляем состояние навигации
+            router.refresh();
 
         } catch (err: any) {
+            console.error('[CLIENT LOG] Ошибка в блоке try-catch:', err.message);
             setError(err.message);
         } finally {
+            console.log('[CLIENT LOG] Блок finally. Снимаем флаг загрузки.');
             setIsLoading(false);
         }
     };
@@ -42,10 +51,8 @@ export default function AuthPage() {
         <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
             <div className="w-full max-w-sm rounded-lg bg-[#1C1C1C] p-8 shadow-lg">
                 <h1 className="mb-6 text-center text-3xl font-bold text-white">Лавка</h1>
-                
-                {/* [ИСПРАВЛЕНО] Тег <form> заменен на <div>, чтобы избежать конфликта с Next.js Server Actions */}
-                {/* Атрибут onSubmit больше не нужен */}
                 <div className="space-y-6">
+                    {/* ... остальной JSX без изменений ... */}
                     <div>
                         <label htmlFor="username" className="block text-sm font-medium text-gray-300">
                             Имя пользователя
@@ -74,9 +81,7 @@ export default function AuthPage() {
                             className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50"
                         />
                     </div>
-
                     {error && <p className="text-sm text-red-500">{error}</p>}
-
                     <div className="flex flex-col gap-4 pt-2">
                         <button
                             type="button"

@@ -13,8 +13,11 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'Не все поля заполнены' }, { status: 400 });
         }
 
+        // Явно говорим, что в этом объекте есть пароль
+        type UserWithPassword = User & { password: string };
+
         const existingUserResult = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-        const existingUser: User | null = existingUserResult?.rows[0] || null;
+        const existingUser: UserWithPassword | null = existingUserResult?.rows[0] || null;
 
         let user: User | null = null;
 

@@ -1,7 +1,6 @@
 "use client";
 
 import { useState } from 'react';
-// useRouter больше не нужен для перенаправления, но может понадобиться для другого, пока оставим.
 import { useRouter } from 'next/navigation';
 
 export default function AuthPage() {
@@ -28,24 +27,23 @@ export default function AuthPage() {
                 throw new Error(data.error || 'Произошла ошибка');
             }
 
-            // [ИСПРАВЛЕНО] Заменяем "мягкий" редирект на "жесткий"
-            // Это гарантирует, что браузер перезагрузит страницу и отправит новый cookie
+            // Используем "жесткий" редирект для надежности
             window.location.href = '/schedule/0';
 
         } catch (err: any) {
             setError(err.message);
         } finally {
-            // Этот блок может не успеть выполниться до перезагрузки, но это не страшно
             setIsLoading(false);
         }
     };
 
     return (
         <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
-            <div className="w-full max-w-sm rounded-lg bg-[#1C1C1C] p-8 shadow-lg">
+            <div className="w-full max-w-sm rounded-lg bg-[#1C1CC] p-8 shadow-lg">
                 <h1 className="mb-6 text-center text-3xl font-bold text-white">Лавка</h1>
                 
-                <div className="space-y-6">
+                {/* Возвращаем <form> для семантической корректности */}
+                <form onSubmit={(e) => e.preventDefault()} className="space-y-6">
                     <div>
                         <label htmlFor="username" className="block text-sm font-medium text-gray-300">
                             Имя пользователя
@@ -79,7 +77,7 @@ export default function AuthPage() {
 
                     <div className="flex flex-col gap-4 pt-2">
                         <button
-                            type="button"
+                            type="button" // type="button" важен, чтобы не отправлять форму по умолчанию
                             onClick={() => handleSubmit('login')}
                             disabled={isLoading || !username || !password}
                             className="flex w-full justify-center rounded-md border border-transparent bg-[#ffed23] px-4 py-2 text-sm font-medium text-black shadow-sm hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-50"
@@ -95,7 +93,7 @@ export default function AuthPage() {
                             {isLoading ? 'Регистрация...' : 'Зарегистрироваться'}
                         </button>
                     </div>
-                </div>
+                </form>
             </div>
         </main>
     );

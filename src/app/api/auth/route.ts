@@ -1,9 +1,8 @@
-// src/app/api/auth/route.ts
-
 import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { cookies } from 'next/headers';
 import { User } from '@/types/shifts';
+import bcrypt from 'bcryptjs';
 
 export async function POST(request: NextRequest) {
     console.log('\n--- [СЕРВЕР] /api/auth: ПОЛУЧЕН ЗАПРОС ---');
@@ -23,7 +22,7 @@ export async function POST(request: NextRequest) {
         const existingUser: UserWithPassword | null = existingUserResult?.rows[0] || null;
 
         if (existingUser) {
-            console.log(`[СЕРВЕР] НАЙДЕН пользователь "${username}" с ID ${existingUser.id}. Пароль в БД: "${existingUser.password}"`);
+            console.log(`[СЕРВЕР] НАЙДЕН пользователь "${username}" с ID ${existingUser.id}`);
         } else {
             console.log(`[СЕРВЕР] Пользователь "${username}" НЕ НАЙДЕН.`);
         }
@@ -37,16 +36,19 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json({ error: 'Пользователь с таким именем уже существует' }, { status: 409 });
             }
 
-            console.log(`[СЕРВЕР] СОЗДАНИЕ нового пользователя с паролем "${password}"...`);
+            // Хешируем пароль перед сохранением
+            const hashedPassword = await bcrypt.hash(password, 10);
+            console.log(`[СЕРВЕР] СОЗДАНИЕ нового пользователя с хешированным паролем...`);
+            
             const newUserResult = await pool.query(
                 'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, full_name',
-                [username, password]
+                [username, hashedPassword]
             );
             user = newUserResult.rows[0];
             if(user) {
                 console.log(`[СЕРВЕР] УСПЕХ. Пользователь создан с ID ${user.id}.`);
             } else {
-                 throw new Error('Не удалось создать пользователя');
+                throw new Error('Не удалось создать пользователя');
             }
 
         } else if (action === 'login') {
@@ -56,8 +58,11 @@ export async function POST(request: NextRequest) {
                 return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
             }
             
-            console.log(`[СЕРВЕР] СРАВНЕНИЕ паролей: (введенный)"${password}" === (из БД)"${existingUser.password}"`);
-            if (existingUser.password !== password) {
+            // Сравниваем хешированные пароли
+            console.log(`[СЕРВЕР] СРАВНЕНИЕ хешей паролей...`);
+            const passwordMatch = await bcrypt.compare(password, existingUser.password);
+            
+            if (!passwordMatch) {
                 console.log(`[СЕРВЕР] ОТКАЗ. Пароли не совпадают. Ответ 401.`);
                 return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
             }
@@ -72,14 +77,23 @@ export async function POST(request: NextRequest) {
         if (user) {
             console.log(`[СЕРВЕР] УСТАНОВКА COOKIE для пользователя ID ${user.id}.`);
             const sessionData = { id: user.id, username: user.username };
-            cookies().set('auth-session', JSON.stringify(sessionData), {
+            
+            // Получаем объект cookies правильным способом для App Router
+            const cookieStore = cookies();
+            
+            cookieStore.set('auth-session', JSON.stringify(sessionData), {
                 httpOnly: true,
                 secure: process.env.NODE_ENV === 'production',
-                maxAge: 60 * 60 * 24 * 7,
+                sameSite: 'lax',
+                maxAge: 60 * 60 * 24 * 7, // 7 дней
                 path: '/',
             });
-            console.log('[СЕРВЕР] ОТВЕТ 200 OK.');
-            return NextResponse.json({ message: 'Успешно!' });
+            
+            console.log('[СЕРВЕР] Cookie установлена. ОТВЕТ 200 OK.');
+            return NextResponse.json({ 
+                message: 'Успешно!',
+                user: { id: user.id, username: user.username }
+            });
         }
         
         console.error('[СЕРВЕР] КРИТИЧЕСКАЯ ОШИБКА: user=null. Ответ 500.');

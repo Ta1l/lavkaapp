@@ -4,9 +4,6 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { cookies } from 'next/headers';
 import { User } from '@/types/shifts';
-import bcrypt from 'bcrypt';
-
-const SALT_ROUNDS = 10;
 
 export async function POST(request: NextRequest) {
     try {
@@ -17,9 +14,7 @@ export async function POST(request: NextRequest) {
         }
 
         const existingUserResult = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
-        
-        // [ИСПРАВЛЕНО] Заменено на безопасную проверку
-        const existingUser = existingUserResult?.rows[0] || null;
+        const existingUser: User | null = existingUserResult?.rows[0] || null;
 
         let user: User | null = null;
 
@@ -27,27 +22,19 @@ export async function POST(request: NextRequest) {
             if (existingUser) {
                 return NextResponse.json({ error: 'Пользователь с таким именем уже существует' }, { status: 409 });
             }
-            
-            const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-            
+
             const newUserResult = await pool.query(
                 'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, full_name',
-                [username, hashedPassword]
+                [username, password]
             );
             user = newUserResult.rows[0];
 
         } else if (action === 'login') {
-            if (!existingUser) {
-                return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
-            }
-
-            const isPasswordCorrect = await bcrypt.compare(password, existingUser.password);
-
-            if (!isPasswordCorrect) {
+            if (!existingUser || existingUser.password !== password) {
                 return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
             }
             user = existingUser;
-            
+
         } else {
             return NextResponse.json({ error: 'Неверное действие' }, { status: 400 });
         }
@@ -64,6 +51,7 @@ export async function POST(request: NextRequest) {
         }
 
         return NextResponse.json({ error: 'Произошла непредвиденная ошибка' }, { status: 500 });
+
     } catch (error) {
         console.error('[API Auth Error]', error);
         return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });

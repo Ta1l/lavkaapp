@@ -4,6 +4,9 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { cookies } from 'next/headers';
 import { User } from '@/types/shifts';
+import bcrypt from 'bcrypt'; // [ДОБАВЛЕНО]
+
+const SALT_ROUNDS = 10; // Стандартное значение для "сложности" хеширования
 
 export async function POST(request: NextRequest) {
     try {
@@ -13,36 +16,39 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ error: 'Не все поля заполнены' }, { status: 400 });
         }
 
-        const existingUser = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        const existingUserResult = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
+        const existingUser = existingUserResult.rowCount > 0 ? existingUserResult.rows[0] : null;
+
         let user: User | null = null;
 
         if (action === 'register') {
-            // Проверяем, существует ли уже такой пользователь
-            // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-            if ((existingUser?.rowCount ?? 0) > 0) {
+            if (existingUser) {
                 return NextResponse.json({ error: 'Пользователь с таким именем уже существует' }, { status: 409 });
             }
-            // Если нет, создаём нового (здесь должна быть логика хеширования пароля)
-            const newUser = await pool.query(
+            
+            // [ИЗМЕНЕНО] Хешируем пароль перед сохранением
+            const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+            
+            const newUserResult = await pool.query(
                 'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, full_name',
-                [username, password]
+                [username, hashedPassword] // Сохраняем хеш, а не пароль
             );
-            user = newUser.rows[0];
+            user = newUserResult.rows[0];
 
         } else if (action === 'login') {
-            // Проверяем, существует ли пользователь
-            // --- ИСПРАВЛЕНИЕ ЗДЕСЬ ---
-            if ((existingUser?.rowCount ?? 0) === 0) {
+            if (!existingUser) {
                 return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
             }
-            // Проверяем пароль (здесь должно быть сравнение хешей)
-            if (existingUser.rows[0].password !== password) {
-                return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
-            }
-            user = existingUser.rows[0];
 
+            // [ИЗМЕНЕНО] Сравниваем введенный пароль с хешем из базы
+            const isPasswordCorrect = await bcrypt.compare(password, existingUser.password);
+
+            if (!isPasswordCorrect) {
+                return NextResponse.json({ error: 'Неверное имя пользователя или пароль' }, { status: 401 });
+            }
+            user = existingUser;
+            
         } else {
-            // Если действие не 'register' и не 'login'
             return NextResponse.json({ error: 'Неверное действие' }, { status: 400 });
         }
 
@@ -55,11 +61,12 @@ export async function POST(request: NextRequest) {
                 maxAge: 60 * 60 * 24 * 7, // 1 неделя
                 path: '/',
             });
+            // Возвращаем успешный ответ, но без лишних данных
             return NextResponse.json({ message: 'Успешно!' });
         }
 
+        // Эта ветка не должна срабатывать, но это защита на всякий случай
         return NextResponse.json({ error: 'Произошла непредвиденная ошибка' }, { status: 500 });
-
     } catch (error) {
         console.error('[API Auth Error]', error);
         return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });

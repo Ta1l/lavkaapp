@@ -1,8 +1,8 @@
 -- db/init.sql
 
-DROP TABLE IF EXISTS shifts;
-DROP TABLE IF EXISTS users;
-DROP TYPE IF EXISTS shift_status;
+DROP TABLE IF EXISTS shifts CASCADE;
+DROP TABLE IF EXISTS users CASCADE;
+DROP TYPE IF EXISTS shift_status CASCADE;
 
 CREATE TYPE shift_status AS ENUM ('pending', 'confirmed', 'cancelled', 'available');
 

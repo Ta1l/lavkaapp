@@ -16,35 +16,24 @@ export default function AuthPage() {
         setError(null);
 
         try {
-            console.log(`[КЛИЕНТ] Отправка ${action} запроса...`);
-            
             const response = await fetch('/api/auth', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ username, password, action }),
-                credentials: 'include', // Важно для работы с куками
             });
 
             const data = await response.json();
-            console.log(`[КЛИЕНТ] Получен ответ:`, data);
 
             if (!response.ok) {
                 throw new Error(data.error || 'Произошла ошибка');
             }
 
-            // Успешная авторизация
-            console.log(`[КЛИЕНТ] ${action} успешен, редирект...`);
-            
-            // Используем router.push вместо window.location для более плавного перехода
+            // [ИСПРАВЛЕНО] Это самый надежный способ для App Router
+            // Сначала переходим на страницу, потом обновляем ее состояние, чтобы подхватить сессию
             router.push('/schedule/0');
-            
-            // Если router.push не сработает, используем запасной вариант
-            setTimeout(() => {
-                window.location.href = '/schedule/0';
-            }, 100);
+            router.refresh();
 
         } catch (err: any) {
-            console.error(`[КЛИЕНТ] Ошибка:`, err);
             setError(err.message);
         } finally {
             setIsLoading(false);

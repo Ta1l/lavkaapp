@@ -5,7 +5,7 @@ import { Pool } from 'pg';
 const dbConfig = {
   user: process.env.POSTGRES_USER || 'lavka_user',
   host: process.env.POSTGRES_HOST || 'localhost',
-  database: process.env.POSTGRES_DATABASE || 'lavka_db',  // замените на имя вашей БД
+  database: process.env.POSTGRES_DATABASE || 'schedule_db',
   password: process.env.POSTGRES_PASSWORD || 'hw6uxxs9*Hz5',
   port: Number(process.env.POSTGRES_PORT || 5432),
   max: 10,

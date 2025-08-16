@@ -1,81 +1,57 @@
 // src/app/page.tsx
-'use client';
-
+"use client";
 import { useState } from 'react';
 
 export default function AuthPage() {
-  const [error, setError] = useState<string | null>(null);
-  const [pending, setPending] = useState(false);
+    const [username, setUsername] = useState('');
+    const [password, setPassword] = useState('');
+    const [error, setError] = useState<string | null>(null);
+    const [isLoading, setIsLoading] = useState(false);
 
-  // т.к. используем обычную форму, JS здесь минимален
-  // Ошибки сервер вернёт JSON-телом только при fetch,
-  // при submit формы он редиректит. Для простоты, ошибок тут не ловим.
-  // Если нужно — можно сделать AJAX логин с fetch, но тогда вернётся к гонке cookie.
+    const handleSubmit = async (action: 'login' | 'register') => {
+        setIsLoading(true);
+        setError(null);
+        try {
+            const response = await fetch('/api/auth', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ username, password, action }),
+            });
+            const data = await response.json();
+            if (!response.ok) {
+                throw new Error(data.error || 'Произошла ошибка');
+            }
+            window.location.href = '/schedule/0';
+        } catch (err: any) {
+            setError(err.message);
+            // После неудачной попытки очищаем поля
+            setUsername('');
+            setPassword('');
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
-      <div className="w-full max-w-sm rounded-lg bg-[#1C1C1C] p-8 shadow-lg">
-        <h1 className="mb-6 text-center text-3xl font-bold text-white">Лавка</h1>
-
-        <form
-          action="/api/auth"
-          method="POST"
-          className="space-y-6"
-          onSubmit={() => setPending(true)}
-        >
-          <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-300">
-              Имя пользователя
-            </label>
-            <input
-              id="username"
-              name="username"
-              type="text"
-              required
-              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
-              autoComplete="username"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-300">
-              Пароль
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              required
-              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
-              autoComplete="current-password"
-            />
-          </div>
-
-          {error && <p className="text-sm text-red-500">{error}</p>}
-
-          <div className="flex flex-col gap-4 pt-2">
-            <button
-              type="submit"
-              name="action"
-              value="login"
-              disabled={pending}
-              className="flex w-full justify-center rounded-md border border-transparent bg-[#ffed23] px-4 py-2 text-sm font-medium text-black shadow-sm hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {pending ? 'Вход…' : 'Войти'}
-            </button>
-
-            <button
-              type="submit"
-              name="action"
-              value="register"
-              disabled={pending}
-              className="flex w-full justify-center rounded-md border border-gray-600 bg-gray-700 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {pending ? 'Регистрация…' : 'Зарегистрироваться'}
-            </button>
-          </div>
-        </form>
-      </div>
-    </main>
-  );
+    return (
+        <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
+            <div className="w-full max-w-sm rounded-lg bg-[#1C1C1C] p-8 shadow-lg">
+                <h1 className="mb-6 text-center text-3xl font-bold text-white">Лавка</h1>
+                <form onSubmit={(e) => { e.preventDefault(); handleSubmit('login'); }} className="space-y-6">
+                    <div>
+                        <label htmlFor="username">Имя пользователя</label>
+                        <input id="username" name="username" type="text" required value={username} onChange={(e) => setUsername(e.target.value)} />
+                    </div>
+                    <div>
+                        <label htmlFor="password">Пароль</label>
+                        <input id="password" name="password" type="password" required value={password} onChange={(e) => setPassword(e.target.value)} />
+                    </div>
+                    {error && <p className="text-sm text-red-500">{error}</p>}
+                    <div className="flex flex-col gap-4 pt-2">
+                        <button type="button" onClick={() => handleSubmit('login')} disabled={isLoading || !username || !password}>Войти</button>
+                        <button type="button" onClick={() => handleSubmit('register')} disabled={isLoading || !username || !password}>Зарегистрироваться</button>
+                    </div>
+                </form>
+            </div>
+        </main>
+    );
 }

@@ -1,6 +1,6 @@
 // src/components/ErrorBoundary.tsx
 
-"use client"; // <-- ЭТА СТРОКА РЕШАЕТ ПРОБЛЕМУ!
+"use client"; 
 
 import React from 'react';
 

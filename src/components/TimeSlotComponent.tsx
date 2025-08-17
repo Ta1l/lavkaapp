@@ -28,12 +28,13 @@ export default function TimeSlotComponent({
     const isMySlot = slot.user_id === currentUserId && currentUserId !== null;
     const isTakenByOther = slot.user_id !== null && !isMySlot;
 
-    // Ключевое условие: можно ли занять этот слот?
-    // Слот можно занять, если он свободен, мы не владелец и мы авторизованы.
-    const canBeTaken = isSlotAvailable && !isOwner && currentUserId !== null;
+    // [ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ] Ключевое условие: можно ли занять этот слот?
+    // Слот можно занять, только если он свободен И мы являемся владельцем этого расписания.
+    const canBeTaken = isSlotAvailable && isOwner;
 
     const handleClick = (e: React.MouseEvent) => {
         e.stopPropagation();
+        // Клик сработает только если слот можно занять
         if (canBeTaken) {
             onTakeSlot(day, slot);
         }
@@ -45,8 +46,8 @@ export default function TimeSlotComponent({
                 "w-full h-[35px] rounded-[20px] flex items-center justify-between px-3 transition-colors relative",
                 {
                     "bg-[#353333]": isSlotAvailable,
-                    "cursor-pointer hover:bg-[#404040]": canBeTaken,
-                    "cursor-default": !canBeTaken && isSlotAvailable,
+                    "cursor-pointer hover:bg-[#404040]": canBeTaken, // Интерактивность только если можно занять
+                    "cursor-default": !canBeTaken && isSlotAvailable, // Статичный курсор для свободных слотов на чужой странице
                     "bg-blue-800": isMySlot,
                     "bg-gray-700 opacity-70": isTakenByOther,
                 }

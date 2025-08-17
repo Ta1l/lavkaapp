@@ -1,24 +1,16 @@
 // src/app/page.tsx
-"use client";
-
-import { useState } from "react";
-
 export default function AuthPage() {
-  const [pending, setPending] = useState(false);
-
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
       <div className="w-full max-w-sm rounded-lg bg-[#1C1C1C] p-8 shadow-lg">
         <h1 className="mb-6 text-center text-3xl font-bold text-white">Лавка</h1>
 
-        <form
-          action="/api/auth"
-          method="POST"
-          className="space-y-6"
-          onSubmit={() => setPending(true)}
-        >
+        <form action="/api/auth" method="POST" className="space-y-6">
           <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-300">
+            <label
+              htmlFor="username"
+              className="block text-sm font-medium text-gray-300"
+            >
               Имя пользователя
             </label>
             <input
@@ -27,12 +19,15 @@ export default function AuthPage() {
               type="text"
               required
               autoComplete="username"
-              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
+              className="mt-1 block w-full rounded-md bg-gray-800 text-white px-3 py-2 focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50"
             />
           </div>
 
           <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-300">
+            <label
+              htmlFor="password"
+              className="block text-sm font-medium text-gray-300"
+            >
               Пароль
             </label>
             <input
@@ -41,7 +36,7 @@ export default function AuthPage() {
               type="password"
               required
               autoComplete="current-password"
-              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
+              className="mt-1 block w-full rounded-md bg-gray-800 text-white px-3 py-2 focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50"
             />
           </div>
 
@@ -50,20 +45,18 @@ export default function AuthPage() {
               type="submit"
               name="action"
               value="login"
-              disabled={pending}
-              className="flex w-full justify-center rounded-md border border-transparent bg-[#ffed23] px-4 py-2 text-sm font-medium text-black shadow-sm hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full rounded-md bg-yellow-400 px-4 py-2 text-sm font-medium text-black hover:bg-yellow-300 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 focus:ring-offset-gray-800"
             >
-              {pending ? "Вход…" : "Войти"}
+              Войти
             </button>
 
             <button
               type="submit"
               name="action"
               value="register"
-              disabled={pending}
-              className="flex w-full justify-center rounded-md border border-gray-600 bg-gray-700 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+              className="w-full rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-800"
             >
-              {pending ? "Регистрация…" : "Зарегистрироваться"}
+              Зарегистрироваться
             </button>
           </div>
         </form>

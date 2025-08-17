@@ -6,7 +6,7 @@ import { pool } from '@/lib/db';
 import { format } from 'date-fns';
 import { User } from '@/types/shifts';
 
-// --- Вспомогательные функции (взяты из вашей версии, они отличные) ---
+// --- Вспомогательные функции ---
 
 async function getUserFromSession(): Promise<User | null> {
   try {
@@ -30,7 +30,6 @@ function normalizeDateString(d: string | Date): string | null {
   }
 }
 
-
 // --- Обработчики HTTP-методов ---
 
 export async function GET(request: NextRequest) {
@@ -45,7 +44,6 @@ export async function GET(request: NextRequest) {
 
     const currentUser = await getUserFromSession();
     
-    // Динамическое построение запроса для гибкости
     let query = `
       SELECT s.id, s.user_id, s.shift_date, s.shift_code, s.status,
              u.username, u.full_name
@@ -64,19 +62,17 @@ export async function GET(request: NextRequest) {
       where.push(`s.shift_date < $${params.length}`);
     }
     
-    // [ИСПРАВЛЕНА ЛОГИКА] Теперь она соответствует нашей архитектуре
-    const isOwnerView = !viewedUserIdParam || (currentUser && currentUser.id.toString() === viewedUserIdParam);
+    const isOwnerView =
+      !viewedUserIdParam ||
+      (currentUser && currentUser.id.toString() === viewedUserIdParam);
 
     if (isOwnerView && currentUser) {
-      // Я смотрю свое расписание: вижу свои слоты + все доступные
       params.push(currentUser.id);
       where.push(`(s.user_id = $${params.length} OR s.status = 'available')`);
     } else if (viewedUserIdParam) {
-      // Я смотрю чужое расписание: вижу только занятые им слоты
       params.push(parseInt(viewedUserIdParam, 10));
       where.push(`s.user_id = $${params.length}`);
     } else {
-      // Я не авторизован: вижу только доступные
       where.push(`s.status = 'available'`);
     }
 
@@ -87,7 +83,6 @@ export async function GET(request: NextRequest) {
 
     const result = await pool.query(query, params);
     return NextResponse.json(result.rows);
-
   } catch (err) {
     console.error('[GET /api/shifts] error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
@@ -95,23 +90,31 @@ export async function GET(request: NextRequest) {
 }
 
 export async function POST(request: NextRequest) {
-  // Эта функция теперь отвечает ТОЛЬКО за создание нового ТИПА слота на день
   try {
     const currentUser = await getUserFromSession();
-    if (!currentUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!currentUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
     const { date, startTime, endTime } = await request.json();
-    if (!date || !startTime || !endTime) return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    if (!date || !startTime || !endTime) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
 
     const dateStr = normalizeDateString(date);
-    if (!dateStr) return NextResponse.json({ error: 'Invalid date' }, { status: 400 });
+    if (!dateStr) {
+      return NextResponse.json({ error: 'Invalid date' }, { status: 400 });
+    }
 
     const shiftCode = `${startTime}-${endTime}`;
 
     // Сначала ищем. Если нашли - просто возвращаем.
-    const existing = await pool.query('SELECT * FROM shifts WHERE shift_date = $1 AND shift_code = $2', [dateStr, shiftCode]);
-    if (existing.rowCount > 0) {
-        return NextResponse.json(existing.rows[0]);
+    const existing = await pool.query(
+      'SELECT * FROM shifts WHERE shift_date = $1 AND shift_code = $2',
+      [dateStr, shiftCode]
+    );
+    if ((existing.rowCount ?? 0) > 0) {
+      return NextResponse.json(existing.rows[0]);
     }
 
     // Если не нашли - создаем.
@@ -129,25 +132,29 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  // Эта функция теперь отвечает ТОЛЬКО за ОСВОБОЖДЕНИЕ всех слотов за день
   try {
     const currentUser = await getUserFromSession();
-    if (!currentUser) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (!currentUser) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
 
     const url = new URL(request.url);
     const dateParam = url.searchParams.get('date');
-    if (!dateParam) return NextResponse.json({ error: 'Missing date param' }, { status: 400 });
+    if (!dateParam) {
+      return NextResponse.json({ error: 'Missing date param' }, { status: 400 });
+    }
 
     const dateStr = normalizeDateString(dateParam);
-    if (!dateStr) return NextResponse.json({ error: 'Invalid date' }, { status: 400 });
+    if (!dateStr) {
+      return NextResponse.json({ error: 'Invalid date' }, { status: 400 });
+    }
     
-    // [ИСПРАВЛЕНО] Мы не удаляем, а ОСВОБОЖДАЕМ слоты
     const res = await pool.query(
       `UPDATE shifts SET user_id = NULL, status = 'available'
        WHERE shift_date = $1 AND user_id = $2`,
       [dateStr, currentUser.id]
     );
-    return NextResponse.json({ ok: true, releasedCount: res.rowCount });
+    return NextResponse.json({ ok: true, releasedCount: res.rowCount ?? 0 });
   } catch (err) {
     console.error('[DELETE /api/shifts] error', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });

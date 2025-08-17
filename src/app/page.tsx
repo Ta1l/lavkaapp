@@ -1,12 +1,10 @@
 // src/app/page.tsx
 "use client";
 
-import { useState } from 'react';
+import { useState } from "react";
 
 export default function AuthPage() {
   const [pending, setPending] = useState(false);
-  // useState для ошибки пока не используем, так как редирект обрабатывается сервером
-  // const [error, setError] = useState<string | null>(null);
 
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
@@ -17,7 +15,7 @@ export default function AuthPage() {
           action="/api/auth"
           method="POST"
           className="space-y-6"
-          onSubmit={() => setPending(true)} // Блокируем кнопки при отправке
+          onSubmit={() => setPending(true)}
         >
           <div>
             <label htmlFor="username" className="block text-sm font-medium text-gray-300">
@@ -25,11 +23,11 @@ export default function AuthPage() {
             </label>
             <input
               id="username"
-              name="username" // Важно: 'name' используется для отправки данных формы
+              name="username"
               type="text"
               required
-              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
               autoComplete="username"
+              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
             />
           </div>
 
@@ -39,25 +37,23 @@ export default function AuthPage() {
             </label>
             <input
               id="password"
-              name="password" // Важно: 'name' используется для отправки данных формы
+              name="password"
               type="password"
               required
-              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
               autoComplete="current-password"
+              className="mt-1 block w-full rounded-md border-gray-600 bg-gray-800 text-white shadow-sm focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50 px-3 py-2"
             />
           </div>
-
-          {/* {error && <p className="text-sm text-red-500">{error}</p>} */}
 
           <div className="flex flex-col gap-4 pt-2">
             <button
               type="submit"
-              name="action" // Важно: 'name' и 'value' определяют, какая кнопка нажата
+              name="action"
               value="login"
               disabled={pending}
               className="flex w-full justify-center rounded-md border border-transparent bg-[#ffed23] px-4 py-2 text-sm font-medium text-black shadow-sm hover:bg-yellow-400 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {pending ? 'Вход…' : 'Войти'}
+              {pending ? "Вход…" : "Войти"}
             </button>
 
             <button
@@ -67,7 +63,7 @@ export default function AuthPage() {
               disabled={pending}
               className="flex w-full justify-center rounded-md border border-gray-600 bg-gray-700 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
             >
-              {pending ? 'Регистрация…' : 'Зарегистрироваться'}
+              {pending ? "Регистрация…" : "Зарегистрироваться"}
             </button>
           </div>
         </form>

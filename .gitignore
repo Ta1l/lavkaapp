@@ -39,3 +39,10 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+Dockerfile
+Caddyfile
+ecosystem.config.js
+docker-compose.local.yml
+db.env
+udo nginx -t

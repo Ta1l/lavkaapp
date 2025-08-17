@@ -6,7 +6,6 @@ import ScheduleClientComponent from '@/components/ScheduleClientComponent';
 import { ErrorBoundary } from '@/components/ErrorBoundary';
 import { notFound } from 'next/navigation';
 import { cookies } from 'next/headers';
-import { format, addDays } from 'date-fns'; // Этот импорт важен, оставляем его
 
 interface PageProps {
     params: { offset: string; };
@@ -24,20 +23,22 @@ function getCurrentUserFromCookie(): User | null {
 }
 
 async function getWeekData(offset: number, targetUserId?: number): Promise<Day[]> {
+    console.log('[getWeekData] Начало загрузки данных...');
     const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
     let targetWeekTemplate = offset === 0 ? mainWeek : nextWeek;
 
-    // Определяем даты начала и конца недели для запроса к API
-    const startDate = format(targetWeekTemplate[0].date, 'yyyy-MM-dd');
-    const endDate = format(addDays(targetWeekTemplate[6].date, 1), 'yyyy-MM-dd');
-
-    // Формируем URL для нашего единого API
-    const apiUrl = new URL(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000'}/api/shifts`);
-    apiUrl.searchParams.append('start', startDate);
-    apiUrl.searchParams.append('end', endDate);
-    if (targetUserId) {
-        apiUrl.searchParams.append('userId', String(targetUserId));
+    if (!targetUserId) {
+        console.warn("[getWeekData] Нет targetUserId, возвращаем пустую неделю.");
+        return targetWeekTemplate;
     }
+
+    // [ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ] Собираем URL правильно, используя переменную окружения
+    const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
+    const apiUrl = new URL(`${baseUrl}/api/shifts`);
+    apiUrl.searchParams.append('offset', String(offset));
+    apiUrl.searchParams.append('userId', String(targetUserId));
+    
+    console.log(`[getWeekData] Запрос на API: ${apiUrl.toString()}`);
 
     try {
         const response = await fetch(apiUrl.toString(), { 
@@ -47,11 +48,13 @@ async function getWeekData(offset: number, targetUserId?: number): Promise<Day[]
             },
         });
 
+        console.log(`[getWeekData] Ответ от API получен, статус: ${response.status}`);
         if (!response.ok) {
-            throw new Error(`API returned status: ${response.status} ${await response.text()}`);
+            throw new Error(`API вернул ошибку: ${response.status}`);
         }
         
         const shifts: Shift[] = await response.json();
+        console.log(`[getWeekData] Получено ${shifts.length} смен из API.`);
 
         return targetWeekTemplate.map(day => {
             const dayShifts = shifts.filter(shift => new Date(shift.shift_date).toDateString() === day.date.toDateString());
@@ -67,29 +70,25 @@ async function getWeekData(offset: number, targetUserId?: number): Promise<Day[]
                 }))
             };
         });
-
     } catch (error) {
-        console.error(`[Page Data Error] Failed to fetch week data for offset ${offset}:`, error);
-        return targetWeekTemplate;
+        console.error(`[getWeekData] КРИТИЧЕСКАЯ ОШИБКА при получении данных:`, error);
+        return targetWeekTemplate; // Возвращаем пустую структуру в случае сбоя
     }
 }
 
 export default async function SchedulePage({ params, searchParams }: PageProps) {
-    // --- ДИАГНОСТИЧЕСКИЙ ЛОГ ---
     console.log('\n--- [СЕРВЕР] ЗАГРУЗКА СТРАНИЦЫ РАСПИСАНИЯ ---');
     const currentUser = getCurrentUserFromCookie();
     console.log('[СЕРВЕР] Текущий пользователь из cookie:', currentUser);
-    console.log('[СЕРВЕР] Параметры URL: offset=', params.offset, 'user=', searchParams.user);
-    // -------------------------
-
+    
     const offset = parseInt(params.offset);
     if (isNaN(offset) || ![0, 1].includes(offset)) {
         return notFound();
     }
     
+    const viewedUserIdParam = searchParams.user;
     let targetUserId: number | undefined;
 
-    const viewedUserIdParam = searchParams.user;
     if (viewedUserIdParam && typeof viewedUserIdParam === 'string') {
         targetUserId = parseInt(viewedUserIdParam, 10);
     } else if (currentUser) {
@@ -97,12 +96,9 @@ export default async function SchedulePage({ params, searchParams }: PageProps) 
     }
     
     console.log('[СЕРВЕР] ID пользователя для загрузки данных:', targetUserId);
-
     const isOwner = !viewedUserIdParam || (currentUser?.id === targetUserId);
-    console.log('[СЕРВЕР] Является ли владельцем (isOwner):', isOwner);
     
     const weekDays = await getWeekData(offset, targetUserId);
-    console.log(`[СЕРВЕР] Загружено ${weekDays.reduce((acc, day) => acc + day.slots.length, 0)} слотов для отображения.`);
     console.log('--- [СЕРВЕР] ЗАГРУЗКА СТРАНИЦЫ ЗАВЕРШЕНА ---\n');
 
     return (

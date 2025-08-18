@@ -1,116 +1,125 @@
 // src/app/schedule/[offset]/page.tsx
+import React from "react";
+import { pool } from "@/lib/db";
+import { getCalendarWeeks } from "@/lib/dateUtils";
+import { format } from "date-fns";
+import { getUserFromSession } from "@/lib/session";
+import ScheduleClientComponent from "@/components/ScheduleClientComponent";
+import type { Day } from "@/types/shifts";
 
-import { getCalendarWeeks } from '@/lib/dateUtils';
-import { Shift, Day, User } from '@/types/shifts';
-import ScheduleClientComponent from '@/components/ScheduleClientComponent';
-import { ErrorBoundary } from '@/components/ErrorBoundary';
-import { notFound } from 'next/navigation';
-import { cookies } from 'next/headers';
-
-interface PageProps {
-    params: { offset: string; };
-    searchParams: { [key: string]: string | string[] | undefined };
+interface Props {
+  params: { offset: string };
+  searchParams?: { userId?: string; start?: string; end?: string };
 }
 
-function getCurrentUserFromCookie(): User | null {
-    const sessionCookie = cookies().get('auth-session');
-    if (!sessionCookie) return null;
-    try {
-        return JSON.parse(sessionCookie.value);
-    } catch {
-        return null;
-    }
-}
+export default async function SchedulePage({ params, searchParams }: Props) {
+  // offset: '0' or '1'
+  const offset = Number(params.offset ?? 0);
+  const viewedUserId = searchParams?.userId ?? null;
+  const startParam = searchParams?.start ?? null;
+  const endParam = searchParams?.end ?? null;
 
-async function getWeekData(offset: number, targetUserId?: number): Promise<Day[]> {
-    console.log('[getWeekData] Начало загрузки данных...');
-    const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
-    let targetWeekTemplate = offset === 0 ? mainWeek : nextWeek;
+  const currentUser = await getUserFromSession();
 
-    if (!targetUserId) {
-        console.warn("[getWeekData] Нет targetUserId, возвращаем пустую неделю.");
-        return targetWeekTemplate;
-    }
+  // Получаем недели
+  const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
+  const weekDaysTemplate = offset === 1 ? nextWeek : mainWeek;
 
-    // [ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ] Собираем URL правильно, используя переменную окружения
-    const baseUrl = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:3000';
-    const apiUrl = new URL(`${baseUrl}/api/shifts`);
-    apiUrl.searchParams.append('offset', String(offset));
-    apiUrl.searchParams.append('userId', String(targetUserId));
-    
-    console.log(`[getWeekData] Запрос на API: ${apiUrl.toString()}`);
+  // Формируем диапазон дат для запроса (start inclusive, end exclusive)
+  const startDate = format(weekDaysTemplate[0].date, "yyyy-MM-dd");
+  // end date = day after last day
+  const endDate = format(
+    new Date(weekDaysTemplate[6].date.getTime() + 24 * 60 * 60 * 1000),
+    "yyyy-MM-dd"
+  );
 
-    try {
-        const response = await fetch(apiUrl.toString(), { 
-            cache: 'no-store',
-            headers: {
-                Cookie: cookies().toString(),
-            },
-        });
+  // Делаем запрос к БД (показываем слоты в зависимости от viewedUserId / currentUser)
+  const where: string[] = [];
+  const paramsSql: any[] = [];
 
-        console.log(`[getWeekData] Ответ от API получен, статус: ${response.status}`);
-        if (!response.ok) {
-            throw new Error(`API вернул ошибку: ${response.status}`);
-        }
-        
-        const shifts: Shift[] = await response.json();
-        console.log(`[getWeekData] Получено ${shifts.length} смен из API.`);
+  // Датный фильтр
+  paramsSql.push(startDate);
+  where.push(`s.shift_date >= $${paramsSql.length}`);
+  paramsSql.push(endDate);
+  where.push(`s.shift_date < $${paramsSql.length}`);
 
-        return targetWeekTemplate.map(day => {
-            const dayShifts = shifts.filter(shift => new Date(shift.shift_date).toDateString() === day.date.toDateString());
-            return {
-                ...day,
-                slots: dayShifts.map(shift => ({
-                    id: shift.id,
-                    startTime: shift.shift_code.split('-')[0],
-                    endTime: shift.shift_code.split('-')[1],
-                    status: shift.status,
-                    user_id: shift.user_id,
-                    userName: shift.full_name || shift.username,
-                }))
-            };
-        });
-    } catch (error) {
-        console.error(`[getWeekData] КРИТИЧЕСКАЯ ОШИБКА при получении данных:`, error);
-        return targetWeekTemplate; // Возвращаем пустую структуру в случае сбоя
-    }
-}
+  if (viewedUserId) {
+    paramsSql.push(parseInt(viewedUserId, 10));
+    where.push(`s.user_id = $${paramsSql.length}`);
+  } else if (currentUser) {
+    paramsSql.push(currentUser.id);
+    where.push(`(s.user_id = $${paramsSql.length} OR s.status = 'available')`);
+  } else {
+    where.push(`s.status = 'available'`);
+  }
 
-export default async function SchedulePage({ params, searchParams }: PageProps) {
-    console.log('\n--- [СЕРВЕР] ЗАГРУЗКА СТРАНИЦЫ РАСПИСАНИЯ ---');
-    const currentUser = getCurrentUserFromCookie();
-    console.log('[СЕРВЕР] Текущий пользователь из cookie:', currentUser);
-    
-    const offset = parseInt(params.offset);
-    if (isNaN(offset) || ![0, 1].includes(offset)) {
-        return notFound();
-    }
-    
-    const viewedUserIdParam = searchParams.user;
-    let targetUserId: number | undefined;
+  const sql = `
+    SELECT s.id, s.user_id, s.shift_date, s.shift_code, s.status, u.username
+    FROM shifts s
+    LEFT JOIN users u ON u.id = s.user_id
+    WHERE ${where.join(" AND ")}
+    ORDER BY s.shift_date, s.shift_code
+  `;
 
-    if (viewedUserIdParam && typeof viewedUserIdParam === 'string') {
-        targetUserId = parseInt(viewedUserIdParam, 10);
-    } else if (currentUser) {
-        targetUserId = currentUser.id;
-    }
-    
-    console.log('[СЕРВЕР] ID пользователя для загрузки данных:', targetUserId);
-    const isOwner = !viewedUserIdParam || (currentUser?.id === targetUserId);
-    
-    const weekDays = await getWeekData(offset, targetUserId);
-    console.log('--- [СЕРВЕР] ЗАГРУЗКА СТРАНИЦЫ ЗАВЕРШЕНА ---\n');
+  const result = await pool.query(sql, paramsSql);
+  const rows = result.rows as Array<{
+    id: number;
+    user_id: number | null;
+    shift_date: string | Date;
+    shift_code: string;
+    status: string;
+    username?: string | null;
+  }>;
 
-    return (
-        <ErrorBoundary fallback={<p>Произошла ошибка при загрузке расписания.</p>}>
-            <ScheduleClientComponent
-                initialWeekDays={weekDays}
-                initialOffset={offset}
-                currentUser={currentUser}
-                isOwner={isOwner}
-            />
-        </ErrorBoundary>
+  // Копируем шаблон дней и добавляем слоты
+  const weekDays: Day[] = weekDaysTemplate.map((d) => ({
+    ...d,
+    slots: [],
+  }));
+
+  // Помещаем слоты в соответствующие дни
+  for (const r of rows) {
+    const rowDateStr =
+      r.shift_date instanceof Date
+        ? format(r.shift_date, "yyyy-MM-dd")
+        : String(r.shift_date);
+
+    const dayIndex = weekDays.findIndex(
+      (wd) => format(wd.date, "yyyy-MM-dd") === rowDateStr
     );
-}
+    if (dayIndex === -1) continue;
 
-export const dynamic = 'force-dynamic';
+    const [startTime = "", endTime = ""] = r.shift_code?.split("-") ?? ["", ""];
+
+    const slot = {
+      id: r.id,
+      startTime,
+      endTime,
+      status: r.status,
+      user_id: r.user_id,
+      userName: r.username ?? null,
+    };
+
+    weekDays[dayIndex].slots.push(slot);
+  }
+
+  // Сортируем слоты внутри дня по времени начала
+  weekDays.forEach((d) => {
+    d.slots.sort((a: any, b: any) => (a.startTime > b.startTime ? 1 : -1));
+  });
+
+  const isOwner =
+    !!currentUser &&
+    (!viewedUserId || Number(viewedUserId) === currentUser.id);
+
+  // NOTE: ScheduleClientComponent — client component. Передаём сериализуемые данные.
+  // Date объекты будут сериализованы в ISO строки; компонент корректно их нормализует.
+  return (
+    <ScheduleClientComponent
+      initialWeekDays={weekDays}
+      initialOffset={offset}
+      currentUser={currentUser}
+      isOwner={isOwner}
+    />
+  );
+}

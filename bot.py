@@ -15,11 +15,11 @@ dp = Dispatcher()
 # Подключение к БД
 async def get_db_pool():
     return await asyncpg.create_pool(
-        user="postgres",
-        password="postgres",
-        database="lavka",
-        host="localhost"
-    )
+    user="lavka_user",
+    password="hw6uxxs9*Hz5", # Пароль, который мы устанавливали
+    database="schedule_db",
+    host="localhost"
+)
 
 # Хранилище логинов (для примера)
 user_sessions = {}

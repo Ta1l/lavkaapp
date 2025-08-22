@@ -10,7 +10,7 @@ interface TimeSlotComponentProps {
     slot: TimeSlot;
     day: Day;
     onTakeSlot: (day: Day, slot: TimeSlot) => void;
-    onReleaseSlot: (day: Day, slotId: number) => void;
+    onDeleteSlot: (day: Day, slotId: number) => void; // <--- ИЗМЕНЕНО НАЗВАНИЕ
     currentUserId: number | null;
     isOwner: boolean;
 }
@@ -19,71 +19,67 @@ export default function TimeSlotComponent({
     slot,
     day,
     onTakeSlot,
-    onReleaseSlot,
+    onDeleteSlot, // <--- ИЗМЕНЕНО НАЗВАНИЕ
     currentUserId,
     isOwner,
 }: TimeSlotComponentProps) {
-    // Определяем состояния слота
     const isSlotAvailable = slot.user_id === null;
-    const isMySlot = slot.user_id === currentUserId && currentUserId !== null;
-    const isTakenByOther = slot.user_id !== null && !isMySlot;
-
+    const isSlotTaken = slot.user_id !== null;
+    
     // --- НАЧАЛО ИЗМЕНЕНИЙ ---
-    // Ключевое условие: можно ли занять этот слот?
-    // Слот можно занять, если он свободен, и пользователь авторизован.
-    // Неважно, на чьей странице он находится.
-    const canBeTaken = isSlotAvailable && currentUserId !== null;
+    // Вычисляем, занят ли слот ДРУГИМ пользователем
+    const isTakenByOther = slot.user_id !== null && slot.user_id !== currentUserId;
     // --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
+    const canBeTaken = isSlotAvailable && currentUserId !== null;
 
     const handleClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        // Клик сработает только если слот можно занять
         if (canBeTaken) {
-            console.log(`[TimeSlotComponent] User ${currentUserId} is taking slot ${slot.id}`);
             onTakeSlot(day, slot);
-        } else {
-             console.log(`[TimeSlotComponent] Slot ${slot.id} cannot be taken. isSlotAvailable: ${isSlotAvailable}, currentUserId: ${currentUserId}`);
         }
     };
+    
+    // Владелец расписания видит крестик на любом занятом слоте
+    const canDelete = isSlotTaken && isOwner;
 
     return (
         <div
             className={clsx(
-                "w-full h-[35px] rounded-[20px] flex items-center justify-between px-3 transition-colors relative",
+                "w-full h-[35px] rounded-[20px] flex items-center justify-between px-3 transition-all duration-200 relative",
                 {
                     "bg-[#353333]": isSlotAvailable,
-                    "cursor-pointer hover:bg-[#404040]": canBeTaken, // Интерактивность только если можно занять
-                    "cursor-default": !canBeTaken, // Статичный курсор если занять нельзя
-                    "bg-blue-800": isMySlot,
-                    "bg-gray-700 opacity-70": isTakenByOther,
+                    "cursor-pointer hover:bg-[#4a4848]": canBeTaken,
+                    "bg-gray-700": isSlotTaken,
+                    "cursor-default": !canBeTaken,
                 }
             )}
             onClick={handleClick}
-            title={canBeTaken ? "Нажмите, чтобы занять слот" : (isTakenByOther ? `Занято: ${slot.userName}` : "")}
+            title={canBeTaken ? "Нажмите, чтобы занять слот" : (slot.userName ? `Занято: ${slot.userName}` : "")}
         >
             <div className="text-white text-center font-sans text-[14px]">
                 {`${slot.startTime} - ${slot.endTime}`}
             </div>
-
+            
+            {/* --- ИЗМЕНЕНИЕ: Показываем имя, только если слот занят ДРУГИМ пользователем --- */}
             {isTakenByOther && slot.userName && (
-                <div className="text-gray-300 text-xs font-light">
+                <div className="text-gray-300 text-xs font-light truncate max-w-[50%]">
                     {slot.userName}
                 </div>
             )}
             
-            {/* Показываем кнопку "Освободить" только если это мой слот (неважно, на чьей я странице) */}
-            {isMySlot && (
+            {/* Кнопка теперь вызывает onDeleteSlot */}
+            {canDelete && (
                  <button
                     type="button"
                     onClick={(e) => {
                         e.stopPropagation();
                         if (slot.id) {
-                            console.log(`[TimeSlotComponent] User ${currentUserId} is releasing slot ${slot.id}`);
-                            onReleaseSlot(day, slot.id);
+                            onDeleteSlot(day, slot.id); // <--- ИЗМЕНЕНО НАЗВАНИЕ
                         }
                     }}
-                    className="p-1 rounded-full text-gray-400 hover:text-white hover:bg-red-600 active:scale-90"
-                    title="Освободить слот"
+                    className="p-1 rounded-full text-gray-400 hover:text-white hover:bg-red-600 active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                    title="Удалить слот"
                 >
                      <svg
                         xmlns="http://www.w3.org/2000/svg"

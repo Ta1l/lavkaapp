@@ -1,67 +1,70 @@
 // src/app/api/slots/route.ts
-import { NextRequest, NextResponse } from "next/server";
-import { pool } from "@/lib/db";
-import { getUserFromSession } from "@/lib/session";
+import { NextRequest, NextResponse } from 'next/server';
+import { pool } from '@/lib/db';
+import { cookies } from 'next/headers';
+import { User, Shift } from '@/types/shifts';
 
-/**
- * POST - бронирование слота (тело: { slotId: number })
- * DELETE - освобождение слота (query: ?id=...)
- */
+async function getUserFromSession(): Promise<User | null> {
+    const sessionCookie = cookies().get('auth-session');
+    if (!sessionCookie) return null;
+    try {
+        const sessionData = JSON.parse(sessionCookie.value);
+        return sessionData.id ? sessionData : null;
+    } catch { return null; }
+}
 
 export async function POST(request: NextRequest) {
-  const user = await getUserFromSession();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  try {
-    const { slotId } = await request.json();
-    if (!slotId) return NextResponse.json({ error: "Missing slotId" }, { status: 400 });
-
-    // Ставим владельцем слота и помечаем как booked, только если он свободен
-    const result = await pool.query(
-      `UPDATE shifts
-       SET user_id = $1, status = 'booked'
-       WHERE id = $2 AND (user_id IS NULL OR user_id = $1)
-       RETURNING id, user_id, shift_date, shift_code, status`,
-      [user.id, slotId]
-    );
-
-    if ((result.rowCount ?? 0) === 0) {
-      return NextResponse.json({ error: "Slot not available" }, { status: 409 });
+    const user = await getUserFromSession();
+    if (!user) return NextResponse.json({ error: 'Необходима авторизация' }, { status: 401 });
+    try {
+        const { slotId } = await request.json();
+        if (!slotId) return NextResponse.json({ error: 'Не указан ID слота' }, { status: 400 });
+        const result = await pool.query<Shift>(
+            `UPDATE shifts SET user_id = $1, status = 'pending' WHERE id = $2 AND user_id IS NULL RETURNING *`,
+            [user.id, slotId]
+        );
+        if (result.rowCount === 0) return NextResponse.json({ error: 'Слот уже занят или не существует' }, { status: 409 });
+        return NextResponse.json(result.rows[0]);
+    } catch (error) {
+        console.error('[API SLOTS POST Error]', error);
+        return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });
     }
-
-    // Возвращаем обновлённый слот
-    return NextResponse.json(result.rows[0]);
-  } catch (err) {
-    console.error("[API SLOTS POST Error]", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-  }
 }
 
+// --- НАЧАЛО ИЗМЕНЕНИЙ ---
 export async function DELETE(request: NextRequest) {
-  const user = await getUserFromSession();
-  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-
-  try {
-    const { searchParams } = new URL(request.url);
-    const slotIdRaw = searchParams.get("id");
-    if (!slotIdRaw) return NextResponse.json({ error: "Missing id param" }, { status: 400 });
-    const slotId = parseInt(slotIdRaw, 10);
-
-    const result = await pool.query(
-      `UPDATE shifts
-       SET user_id = NULL, status = 'available'
-       WHERE id = $1 AND user_id = $2
-       RETURNING id, user_id, shift_date, shift_code, status`,
-      [slotId, user.id]
-    );
-
-    if ((result.rowCount ?? 0) === 0) {
-      return NextResponse.json({ error: "Slot not found or not owned by you" }, { status: 404 });
+    const user = await getUserFromSession();
+    if (!user) {
+        return NextResponse.json({ error: 'Необходима авторизация' }, { status: 401 });
     }
+    
+    try {
+        const { searchParams } = new URL(request.url);
+        const slotId = searchParams.get('id');
 
-    return NextResponse.json({ ok: true, slot: result.rows[0] });
-  } catch (err) {
-    console.error("[API SLOTS DELETE Error]", err);
-    return NextResponse.json({ error: "Internal server error" }, { status: 500 });
-  }
+        if (!slotId || isNaN(parseInt(slotId, 10))) {
+            return NextResponse.json({ error: 'Не указан корректный ID слота' }, { status: 400 });
+        }
+        
+        console.log(`[API SLOTS DELETE] User ${user.id} attempting to DELETE slot ${slotId}`);
+
+        // ИЗМЕНЕНИЕ: Вместо UPDATE теперь DELETE. Слот удаляется навсегда.
+        const result = await pool.query(
+          `DELETE FROM shifts WHERE id = $1`,
+          [parseInt(slotId, 10)]
+        );
+
+        if (result.rowCount === 0) {
+            console.warn(`[API SLOTS DELETE] Warning: Slot with ID ${slotId} not found for deletion.`);
+            return NextResponse.json({ error: 'Слот не найден' }, { status: 404 });
+        }
+        
+        console.log(`[API SLOTS DELETE] Success: User ${user.id} DELETED slot ${slotId}`);
+        return NextResponse.json({ message: 'Слот успешно удален' });
+
+    } catch (error) {
+        console.error('[API SLOTS DELETE Error]', error);
+        return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });
+    }
 }
+// --- КОНЕЦ ИЗМЕНЕНИЙ ---

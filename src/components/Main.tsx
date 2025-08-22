@@ -15,7 +15,7 @@ interface MainProps {
     isLoading?: boolean;
     currentUserId: number | null;
     onTakeSlot: (day: Day, slot: TimeSlot) => void;
-    onReleaseSlot: (day: Day, slotId: number) => void;
+    onDeleteSlot: (day: Day, slotId: number) => void; // <--- ИЗМЕНЕНО НАЗВАНИЕ
     onAddSlot: (day: Day) => void;
     onDeleteDaySlots: (day: Day) => void;
     isOwner: boolean;
@@ -25,7 +25,7 @@ function DayRow({
     day,
     currentUserId,
     onTakeSlot,
-    onReleaseSlot,
+    onDeleteSlot, // <--- ИЗМЕНЕНО НАЗВАНИЕ
     onAddSlot,
     onDeleteDaySlots,
     isOwner,
@@ -33,7 +33,7 @@ function DayRow({
     day: Day;
     currentUserId: number | null;
     onTakeSlot: (day: Day, slot: TimeSlot) => void;
-    onReleaseSlot: (day: Day, slotId: number) => void;
+    onDeleteSlot: (day: Day, slotId: number) => void; // <--- ИЗМЕНЕНО НАЗВАНИЕ
     onAddSlot: (day: Day) => void;
     onDeleteDaySlots: (day: Day) => void;
     isOwner: boolean;
@@ -47,17 +47,14 @@ function DayRow({
             default: return 'h-[50px]';
         }
     };
-
     const slots = day.slots || [];
     const slotsCount = slots.length;
-
     return (
         <div className={`w-full ${getHeight(slotsCount)} relative transition-all duration-300`}>
             <p className={clsx("absolute top-0 left-[9px] text-[14px] font-normal font-sans leading-normal transition-colors", { "text-[#FDF277] font-semibold": day.isToday, "text-white": !day.isToday })}>
                 {day.formattedDate}
             </p>
 
-            {/* Кнопки управления днем отображаются только для владельца */}
             {isOwner && (
                 <div className="absolute top-[-2px] right-[10px] flex items-center gap-2 z-10">
                     <button
@@ -66,18 +63,18 @@ function DayRow({
                         title="Добавить слот"
                     >
                         <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-white">
-                            <line x1="12" y1="5" x2="12" y2="19"></line>
+                             <line x1="12" y1="5" x2="12" y2="19"></line>
                             <line x1="5" y1="12" x2="19" y2="12"></line>
                         </svg>
                     </button>
-                    <button
+                     <button
                         onClick={() => onDeleteDaySlots(day)}
                         className="flex items-center justify-center w-6 h-6 rounded-full bg-[#353333] hover:bg-red-600 transition-colors"
                         title="Удалить все слоты дня"
-                    >
+                     >
                         <svg xmlns="http://www.w3.org/2000/svg" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-white">
                             <line x1="18" y1="6" x2="6" y2="18"></line>
-                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                             <line x1="6" y1="6" x2="18" y2="18"></line>
                         </svg>
                     </button>
                 </div>
@@ -95,9 +92,9 @@ function DayRow({
                             slot={slot}
                             day={day}
                             onTakeSlot={onTakeSlot}
-                            onReleaseSlot={onReleaseSlot}
+                            onDeleteSlot={onDeleteSlot} // <--- ИЗМЕНЕНО НАЗВАНИЕ
                             currentUserId={currentUserId}
-                            isOwner={isOwner} // Передаем флаг в компонент слота
+                            isOwner={isOwner}
                         />
                     ))}
                 </div>
@@ -113,7 +110,7 @@ export default function Main({
     isLoading = false,
     currentUserId,
     onTakeSlot,
-    onReleaseSlot,
+    onDeleteSlot, // <--- ИЗМЕНЕНО НАЗВАНИЕ
     onAddSlot,
     onDeleteDaySlots,
     isOwner,
@@ -139,14 +136,14 @@ export default function Main({
                             day={day}
                             currentUserId={currentUserId}
                             onTakeSlot={onTakeSlot}
-                            onReleaseSlot={onReleaseSlot}
+                            onDeleteSlot={onDeleteSlot} // <--- ИЗМЕНЕНО НАЗВАНИЕ
                             onAddSlot={onAddSlot}
                             onDeleteDaySlots={onDeleteDaySlots}
                             isOwner={isOwner}
                         />
                     ))
                 ) : (
-                    <div className="flex items-center justify-center h-full text-gray-500">Нет данных для отображения.</div>
+                     <div className="flex items-center justify-center h-full text-gray-500">Нет данных для отображения.</div>
                 )}
             </div>
         </main>

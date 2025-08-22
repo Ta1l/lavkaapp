@@ -33,34 +33,20 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState<Day | null>(null);
 
-  // --- НАЧАЛО ИЗМЕНЕНИЙ: REAL-TIME ОБНОВЛЕНИЕ ---
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   useEffect(() => {
-    // Функция для обновления данных
-    const refreshData = () => {
-      console.log('[ScheduleClient] Refreshing data via router.refresh()');
-      router.refresh();
-    };
-
-    // Если мы просматриваем чужой профиль, запускаем поллинг
+    const refreshData = () => { router.refresh(); };
     if (!isOwner) {
-      console.log('[ScheduleClient] Viewing another user profile. Starting polling for real-time updates.');
-      // Устанавливаем интервал для обновления каждые 5 секунд
       pollingIntervalRef.current = setInterval(refreshData, 5000);
     }
-
-    // Очищаем интервал при размонтировании компонента или изменении isOwner
     return () => {
       if (pollingIntervalRef.current) {
-        console.log('[ScheduleClient] Clearing polling interval.');
         clearInterval(pollingIntervalRef.current);
       }
     };
   }, [isOwner, router]);
-  // --- КОНЕЦ ИЗМЕНЕНИЙ: REAL-TIME ОБНОВЛЕНИЕ ---
 
-  // Синхронизируем состояние с пропсами и выключаем лоадер
   useEffect(() => {
     setWeekDays(initialWeekDays);
     setLoading(false);
@@ -74,13 +60,11 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
   };
 
   const handleLogout = async () => {
-    console.log('[ScheduleClient] Logging out.');
     await fetch('/api/auth/logout', { method: 'POST' });
     window.location.href = '/';
   };
 
   const refreshData = () => {
-    console.log('[ScheduleClient] Manually refreshing data.');
     setLoading(true);
     router.refresh();
   };
@@ -93,10 +77,7 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
   const handleModalDone = async (startTime: string, endTime: string) => {
     if (!selectedDay) return;
     setLoading(true);
-    console.log(`[ScheduleClient] handleModalDone for date: ${selectedDay.date}, time: ${startTime}-${endTime}`);
     try {
-      // --- НАЧАЛО ИЗМЕНЕНИЙ ---
-      // Когда владелец добавляет слот, мы передаем флаг, чтобы сразу его назначить
       const res = await fetch('/api/shifts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -104,26 +85,20 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
           date: selectedDay.date.toISOString(), 
           startTime, 
           endTime,
-          assignToSelf: isOwner // <<<<<<<<<<< Вот оно!
+          assignToSelf: isOwner
         }),
       });
-      // --- КОНЕЦ ИЗМЕНЕНИЙ ---
-
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось создать слот');
-      console.log('[ScheduleClient] Slot created/updated successfully.');
       refreshData();
     } catch (err) {
-      alert(getErrorMessage(err));
-      setLoading(false);
+      alert(getErrorMessage(err)); setLoading(false);
     } finally {
-      setIsModalOpen(false);
-      setSelectedDay(null);
+      setIsModalOpen(false); setSelectedDay(null);
     }
   };
 
   const handleTakeSlot = async (day: Day, slot: TimeSlot) => {
     setLoading(true);
-    console.log(`[ScheduleClient] User ${currentUser?.id} taking slot ${slot.id}`);
     try {
       const res = await fetch('/api/slots', {
           method: 'POST',
@@ -131,41 +106,48 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
           body: JSON.stringify({ slotId: slot.id })
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось занять слот');
-      console.log('[ScheduleClient] Slot taken successfully.');
       refreshData();
     } catch (err) {
-      alert(getErrorMessage(err));
-      setLoading(false);
+      alert(getErrorMessage(err)); setLoading(false);
     }
   };
+  
+  // --- НАЧАЛО ИЗМЕНЕНИЙ ---
+  // Функция переименована и теперь включает подтверждение
+  const handleDeleteSlot = async (day: Day, slotId: number) => {
+    if (!confirm(`Вы уверены, что хотите навсегда удалить этот слот?`)) return;
 
-  const handleReleaseSlot = async (day: Day, slotId: number) => {
     setLoading(true);
-    console.log(`[ScheduleClient] User ${currentUser?.id} releasing slot ${slotId}`);
     try {
-      const res = await fetch(`/api/slots?id=${slotId}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось освободить слот');
-      console.log('[ScheduleClient] Slot released successfully.');
+      // Добавляем { cache: 'no-store' } чтобы избежать проблем с кэшированием
+      const res = await fetch(`/api/slots?id=${slotId}`, { 
+        method: 'DELETE',
+        cache: 'no-store' 
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось удалить слот');
       refreshData();
     } catch (err) {
       alert(getErrorMessage(err));
       setLoading(false);
     }
   };
+  // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
   const handleDeleteDaySlots = async (day: Day) => {
-    if (!confirm(`Вы уверены, что хотите освободить все свои слоты за ${day.formattedDate}?`)) return;
+    const confirmationText = `Вы уверены, что хотите очистить день ${day.formattedDate}?\n\nБудут удалены все свободные слоты, а ваши занятые слоты станут свободными.`;
+    if (!confirm(confirmationText)) return;
+
     setLoading(true);
-    console.log(`[ScheduleClient] User ${currentUser?.id} deleting all slots for ${day.formattedDate}`);
     try {
-      const dateStr = format(day.date, 'yyyy-MM-dd');
-      const res = await fetch(`/api/shifts?date=${dateStr}`, { method: 'DELETE' });
-      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось удалить слоты');
-      console.log('[ScheduleClient] Day slots deleted successfully.');
+      const dateStr = format(day.date, 'yyyy-dd-MM');
+      const res = await fetch(`/api/shifts?date=${dateStr}`, { 
+        method: 'DELETE',
+        cache: 'no-store'
+      });
+      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось очистить день');
       refreshData();
     } catch (err) {
-      alert(getErrorMessage(err));
-      setLoading(false);
+      alert(getErrorMessage(err)); setLoading(false);
     }
   };
 
@@ -179,22 +161,19 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
       <div className="flex flex-col min-h-screen bg-black text-white pb-[70px] pt-[100px]">
         <Header 
           dateRange={dateRange}
-          onPrevWeek={() => navigate(0)}
-          onNextWeek={() => navigate(1)}
-          isPrevDisabled={offset === 0 || loading}
-          isNextDisabled={offset === 1 || loading}
+          onPrevWeek={() => navigate(0)} onNextWeek={() => navigate(1)}
+          isPrevDisabled={offset === 0 || loading} isNextDisabled={offset === 1 || loading}
           onLogout={handleLogout}
         />
         <Main
           weekDays={weekDays}
-          onPrevWeek={() => navigate(0)}
-          onNextWeek={() => navigate(1)}
+          onPrevWeek={() => navigate(0)} onNextWeek={() => navigate(1)}
           isLoading={loading}
           currentUserId={currentUser?.id || null}
           isOwner={isOwner}
           onAddSlot={handleAddSlot}
           onTakeSlot={handleTakeSlot}
-          onReleaseSlot={handleReleaseSlot}
+          onDeleteSlot={handleDeleteSlot} // <--- ИЗМЕНЕНО НАЗВАНИЕ
           onDeleteDaySlots={handleDeleteDaySlots}
         />
         <Lower 

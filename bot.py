@@ -7,7 +7,7 @@ from aiogram.filters import Command
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from ocr_parser import parse_slots
 
-API_TOKEN = "ТВОЙ_API_КЛЮЧ"
+API_TOKEN = "8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM"
 
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher()

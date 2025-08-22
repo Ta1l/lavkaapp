@@ -1,56 +1,50 @@
 import pytesseract
 from PIL import Image
 import re
-import json
-
-# путь к tesseract (обычно он и так в PATH, но если нет - раскомментируй)
-# pytesseract.pytesseract.tesseract_cmd = r"/usr/bin/tesseract"
+from datetime import datetime
 
 def parse_slots(image_path: str):
-    # Загружаем картинку
     img = Image.open(image_path)
-
-    # Распознаём текст
     text = pytesseract.image_to_string(img, lang="rus")
 
     slots = []
-    current_day = None
+    current_date = None
 
-    # Разбиваем на строки
     for line in text.splitlines():
         line = line.strip()
         if not line:
             continue
 
-        # День недели + дата
+        # Дата (например "18 августа, понедельник")
         if re.match(r"\d{1,2}\s+\w+", line.lower()):
-            current_day = line
+            try:
+                # вытаскиваем только дату
+                date_str = line.split(",")[0]
+                current_date = datetime.strptime(date_str + " 2025", "%d %B %Y").date()
+            except Exception:
+                current_date = None
             continue
 
-        # Время + статус
+        # Время
         time_match = re.search(r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})", line)
-        if time_match:
-            slot = {
-                "day": current_day,
-                "time": f"{time_match.group(1)} - {time_match.group(2)}",
-                "status": None
-            }
+        if time_match and current_date:
+            start_time = datetime.strptime(f"{current_date} {time_match.group(1)}", "%Y-%m-%d %H:%M")
+            end_time = datetime.strptime(f"{current_date} {time_match.group(2)}", "%Y-%m-%d %H:%M")
 
-            # определяем статус
-            if "выполнен" in line.lower():
-                slot["status"] = "выполнен"
+            status = "неизвестно"
+            if "выполнен с опозданием" in line.lower():
+                status = "выполнен с опозданием"
+            elif "выполнен" in line.lower():
+                status = "выполнен"
             elif "отмен" in line.lower():
-                slot["status"] = "отменён"
-            elif "опоздан" in line.lower():
-                slot["status"] = "выполнен с опозданием"
-            else:
-                slot["status"] = "неизвестно"
+                status = "отменён"
 
-            slots.append(slot)
+            slots.append({
+                "date": str(current_date),
+                "start_time": start_time,
+                "end_time": end_time,
+                "status": status,
+                "address": "Северный проспект, д. 4 корп. 1"  # можно дораспознавать
+            })
 
     return slots
-
-
-if __name__ == "__main__":
-    result = parse_slots("4d215fd6-3b56-44d3-abde-603a906ab546.png")
-    print(json.dumps(result, ensure_ascii=False, indent=2))

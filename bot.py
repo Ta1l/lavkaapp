@@ -9,6 +9,8 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 import asyncio
 
+from ocr_parser import parse_slots  # твой OCR парсер
+
 # === Конфиг ===
 API_TOKEN = "8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM"
 
@@ -32,6 +34,7 @@ class AuthState(StatesGroup):
 
 class AddShiftState(StatesGroup):
     waiting_for_photos = State()
+    confirming = State()
 
 
 # === DB ===
@@ -46,6 +49,18 @@ async def db_get_user(login: str, password: str):
     if row and bcrypt.checkpw(password.strip().encode(), row["password"].encode()):
         return row["id"]
     return None
+
+
+async def db_add_shift(user_id: int, date: str, time: str, status: str):
+    conn = await asyncpg.connect(**DB_CONFIG)
+    await conn.execute(
+        """
+        INSERT INTO shifts (user_id, shift_date, shift_time, status)
+        VALUES ($1, $2, $3, $4)
+        """,
+        user_id, date, time, status
+    )
+    await conn.close()
 
 
 # === START ===
@@ -72,6 +87,7 @@ async def get_password(message: Message, state: FSMContext):
 
     user_id = await db_get_user(login, password)
     if user_id:
+        await state.update_data(user_id=user_id)
         await message.answer(f"✅ Успешный вход! Добро пожаловать, {login}")
         await state.clear()
     else:
@@ -88,10 +104,13 @@ async def add_shifts(message: Message, state: FSMContext):
 
 @dp.message(StateFilter(AddShiftState.waiting_for_photos), F.photo)
 async def handle_photos(message: Message, state: FSMContext):
-    file_id = message.photo[-1].file_id
+    file = await bot.get_file(message.photo[-1].file_id)
+    file_path = f"downloads/{file.file_unique_id}.png"
+    await bot.download_file(file.file_path, destination=file_path)
+
     data = await state.get_data()
     photos = data.get("photos", [])
-    photos.append(file_id)
+    photos.append(file_path)
     await state.update_data(photos=photos)
     await message.answer("✅ Скриншот получен")
 
@@ -106,22 +125,42 @@ async def confirm_slots(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Здесь будет OCR и парсинг (пока заглушка)
-    await message.answer(f"📸 Получено {len(photos)} скриншотов.\nПодтвердите отправку смен? (yes/no)")
+    all_slots = []
+    for p in photos:
+        slots = parse_slots(p)  # возвращает [{"date": ..., "time": ..., "status": ...}, ...]
+        all_slots.extend(slots)
 
-    await state.update_data(confirm=True)
+    if not all_slots:
+        await message.answer("❌ Не удалось распознать слоты.")
+        await state.clear()
+        return
+
+    await state.update_data(slots=all_slots)
+    slots_text = "\n".join([f"{s['date']} {s['time']} [{s['status']}]" for s in all_slots])
+
+    await message.answer(f"📋 Найдены следующие слоты:\n\n{slots_text}\n\nПодтвердить? (yes/no)")
+    await state.set_state(AddShiftState.confirming)
 
 
-@dp.message(StateFilter(AddShiftState.waiting_for_photos), F.text.lower() == "yes")
+@dp.message(StateFilter(AddShiftState.confirming), F.text.lower() == "yes")
 async def confirm_yes(message: Message, state: FSMContext):
     data = await state.get_data()
-    photos = data.get("photos", [])
-    # TODO: вызвать OCR + сохранить в БД
-    await message.answer(f"✅ Смены ({len(photos)} шт.) сохранены на сервере!")
+    slots = data.get("slots", [])
+    user_id = data.get("user_id")
+
+    if not user_id:
+        await message.answer("❌ Ошибка: пользователь не авторизован")
+        await state.clear()
+        return
+
+    for s in slots:
+        await db_add_shift(user_id, s["date"], s["time"], s["status"])
+
+    await message.answer(f"✅ {len(slots)} смен сохранено в БД!")
     await state.clear()
 
 
-@dp.message(StateFilter(AddShiftState.waiting_for_photos), F.text.lower() == "no")
+@dp.message(StateFilter(AddShiftState.confirming), F.text.lower() == "no")
 async def confirm_no(message: Message, state: FSMContext):
     await message.answer("❌ Отменено")
     await state.clear()

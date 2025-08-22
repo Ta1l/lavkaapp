@@ -1,12 +1,15 @@
 import logging
 import asyncpg
+import bcrypt
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+import asyncio
 
+# === Конфиг ===
 API_TOKEN = "8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM"
 
 DB_CONFIG = {
@@ -22,7 +25,7 @@ logging.basicConfig(level=logging.INFO)
 bot = Bot(token=API_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# --- FSM (состояния) ---
+# === Состояния ===
 class AuthState(StatesGroup):
     waiting_for_login = State()
     waiting_for_password = State()
@@ -30,30 +33,37 @@ class AuthState(StatesGroup):
 class AddShiftState(StatesGroup):
     waiting_for_photos = State()
 
-# --- DB ---
+
+# === DB ===
 async def db_get_user(login: str, password: str):
     conn = await asyncpg.connect(**DB_CONFIG)
     row = await conn.fetchrow(
-        "SELECT id FROM users WHERE username=$1 AND password=$2",
-        login, password
+        "SELECT id, password FROM users WHERE username=$1",
+        login.strip()
     )
     await conn.close()
-    return row["id"] if row else None
 
-# --- START ---
+    if row and bcrypt.checkpw(password.strip().encode(), row["password"].encode()):
+        return row["id"]
+    return None
+
+
+# === START ===
 @dp.message(Command("start"))
 async def start(message: Message, state: FSMContext):
     await message.answer("Введите логин:")
     await state.set_state(AuthState.waiting_for_login)
 
-# --- LOGIN ---
+
+# === LOGIN ===
 @dp.message(StateFilter(AuthState.waiting_for_login))
 async def get_login(message: Message, state: FSMContext):
     await state.update_data(login=message.text.strip())
     await message.answer("Введите пароль:")
     await state.set_state(AuthState.waiting_for_password)
 
-# --- PASSWORD ---
+
+# === PASSWORD ===
 @dp.message(StateFilter(AuthState.waiting_for_password))
 async def get_password(message: Message, state: FSMContext):
     data = await state.get_data()
@@ -68,11 +78,13 @@ async def get_password(message: Message, state: FSMContext):
         await message.answer("❌ Неверный логин или пароль. Попробуйте снова: /start")
         await state.clear()
 
-# --- ADD SHIFTS ---
+
+# === ADD SHIFTS ===
 @dp.message(Command("add"))
 async def add_shifts(message: Message, state: FSMContext):
     await message.answer("Отправьте скриншоты смен. Когда закончите, напишите /done")
     await state.set_state(AddShiftState.waiting_for_photos)
+
 
 @dp.message(StateFilter(AddShiftState.waiting_for_photos), F.photo)
 async def handle_photos(message: Message, state: FSMContext):
@@ -82,6 +94,7 @@ async def handle_photos(message: Message, state: FSMContext):
     photos.append(file_id)
     await state.update_data(photos=photos)
     await message.answer("✅ Скриншот получен")
+
 
 @dp.message(Command("done"), StateFilter(AddShiftState.waiting_for_photos))
 async def confirm_slots(message: Message, state: FSMContext):
@@ -93,28 +106,30 @@ async def confirm_slots(message: Message, state: FSMContext):
         await state.clear()
         return
 
-    # Тут будет OCR и парсинг (пока заглушка)
+    # Здесь будет OCR и парсинг (пока заглушка)
     await message.answer(f"📸 Получено {len(photos)} скриншотов.\nПодтвердите отправку смен? (yes/no)")
 
     await state.update_data(confirm=True)
+
 
 @dp.message(StateFilter(AddShiftState.waiting_for_photos), F.text.lower() == "yes")
 async def confirm_yes(message: Message, state: FSMContext):
     data = await state.get_data()
     photos = data.get("photos", [])
-    # Заглушка — тут ты добавишь отправку слотов в БД
+    # TODO: вызвать OCR + сохранить в БД
     await message.answer(f"✅ Смены ({len(photos)} шт.) сохранены на сервере!")
     await state.clear()
+
 
 @dp.message(StateFilter(AddShiftState.waiting_for_photos), F.text.lower() == "no")
 async def confirm_no(message: Message, state: FSMContext):
     await message.answer("❌ Отменено")
     await state.clear()
 
-# --- MAIN ---
+
+# === MAIN ===
 async def main():
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    import asyncio
     asyncio.run(main())

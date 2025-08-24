@@ -1,6 +1,6 @@
 import logging
 import asyncio
-import aiohttp  # <--- ИЗМЕНЕНИЕ
+import aiohttp
 import re
 from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher
@@ -29,14 +29,13 @@ class AuthState(StatesGroup):
 class SlotState(StatesGroup):
     waiting_for_slots = State()
 
-# === API Функции (переписаны на aiohttp) ===
+# === API Функции ===
 async def get_api_key(username: str, password: str) -> str | None:
     try:
-        # ИЗМЕНЕНИЕ: Используем aiohttp для асинхронных запросов
         async with aiohttp.ClientSession() as session:
-            # ИЗМЕНЕНИЕ: Добавлен слэш в конце URL
+            # --- ИЗМЕНЕНИЕ: Убираем слэш в конце URL ---
             async with session.post(
-                f"{WEBAPP_URL}/api/auth/get-token/",
+                f"{WEBAPP_URL}/api/auth/get-token",
                 json={"username": username, "password": password},
                 timeout=10
             ) as response:
@@ -54,11 +53,10 @@ async def get_api_key(username: str, password: str) -> str | None:
 
 async def add_shift(api_key: str, date: str, start: str, end: str) -> bool:
     try:
-        # ИЗМЕНЕНИЕ: Используем aiohttp
         async with aiohttp.ClientSession() as session:
-            # ИЗМЕНЕНИЕ: Добавлен слэш в конце URL
+            # --- ИЗМЕНЕНИЕ: Убираем слэш в конце URL ---
             async with session.post(
-                f"{WEBAPP_URL}/api/shifts/",
+                f"{WEBAPP_URL}/api/shifts",
                 headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
                 json={
                     "date": date,
@@ -78,7 +76,7 @@ async def add_shift(api_key: str, date: str, start: str, end: str) -> bool:
         logger.error(f"Ошибка при добавлении слота: {e}")
         return False
 
-# === Вспомогательная функция парсинга ===
+# === Вспомогательная функция парсинга (без изменений) ===
 def parse_slot_input(text: str):
     text = text.lower().strip()
     today = datetime.now().date()
@@ -91,7 +89,6 @@ def parse_slot_input(text: str):
         date = today + timedelta(days=1)
         time_part = text.replace("завтра", "").strip()
     else:
-        # Универсальный парсинг даты и времени
         match = re.match(r"(\d{1,2}\.\d{1,2}\.\d{4})\s*(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", text)
         if match:
             date_str, start, end = match.groups()
@@ -101,7 +98,6 @@ def parse_slot_input(text: str):
             except ValueError:
                 return None
     
-    # Парсинг только времени, если было "сегодня" или "завтра"
     match_time = re.match(r"(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", time_part)
     if match_time and 'date' in locals():
         start, end = match_time.groups()
@@ -135,7 +131,7 @@ async def password_input(message: Message, state: FSMContext):
         await state.set_state(SlotState.waiting_for_slots)
         await message.answer("✅ Вход успешен!\nТеперь отправьте слот в формате:\n`26.08.2025 09:00-17:00`\nили `сегодня 10:00-15:00`", parse_mode="Markdown")
     else:
-        await message.answer("❌ Ошибка входа. Попробуйте снова: /start")
+        await message.answer("❌ Ошибка входа. Пожалуйста, проверьте логин и пароль и попробуйте снова: /start")
         await state.clear()
 
 
@@ -156,7 +152,7 @@ async def add_slot_handler(message: Message, state: FSMContext):
         await message.answer("❌ Ошибка при добавлении слота. Проверьте логи сервера.")
 
 
-# === MAIN ===
+# === MAIN (без изменений) ===
 async def main():
     logger.info("Бот запущен...")
     await dp.start_polling(bot)

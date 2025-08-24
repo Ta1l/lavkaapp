@@ -1,34 +1,22 @@
 import logging
-import asyncpg
-import bcrypt
+import asyncio
+import os
+import re
+import requests
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import Message
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-import asyncio
-import os
-
-from ocr_parser import parse_slots  # твой OCR парсер
 
 # === Конфиг ===
 API_TOKEN = "8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM"
-
-DB_CONFIG = {
-    "user": "lavka_user",
-    "password": "hw6uxxs9*Hz5",
-    "database": "schedule_db",
-    "host": "localhost",
-    "port": 5432,
-}
+WEBAPP_URL = "https://slotworker.ru"
 
 # === Логирование ===
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler()]
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=API_TOKEN)
@@ -39,164 +27,121 @@ class AuthState(StatesGroup):
     waiting_for_login = State()
     waiting_for_password = State()
 
-class AddShiftState(StatesGroup):
-    waiting_for_photos = State()
-    confirming = State()
+class SlotState(StatesGroup):
+    waiting_for_slots = State()
 
-
-# === DB ===
-async def db_get_user(login: str, password: str):
+# === API Функции ===
+async def get_api_key(username: str, password: str) -> str | None:
     try:
-        conn = await asyncpg.connect(**DB_CONFIG)
-        row = await conn.fetchrow(
-            "SELECT id, password FROM users WHERE username=$1",
-            login.strip()
+        r = requests.post(
+            f"{WEBAPP_URL}/api/auth/get-token",
+            json={"username": username, "password": password},
+            timeout=10
         )
-        await conn.close()
-        if row and bcrypt.checkpw(password.strip().encode(), row["password"].encode()):
-            return row["id"]
-        return None
+        if r.status_code == 200:
+            api_key = r.json().get("apiKey")
+            logger.info(f"Получен apiKey для {username}")
+            return api_key
+        else:
+            logger.warning(f"Ошибка API аутентификации {r.status_code}: {r.text}")
+            return None
     except Exception as e:
-        logger.error(f"Ошибка подключения к БД при db_get_user: {e}")
+        logger.error(f"Ошибка при запросе токена: {e}")
         return None
 
 
-async def db_add_shift(user_id: int, date: str, time: str, status: str):
+async def add_shift(api_key: str, date: str, start: str, end: str) -> bool:
     try:
-        conn = await asyncpg.connect(**DB_CONFIG)
-        await conn.execute(
-            """
-            INSERT INTO shifts (user_id, shift_date, shift_time, status)
-            VALUES ($1, $2, $3, $4)
-            """,
-            user_id, date, time, status
+        r = requests.post(
+            f"{WEBAPP_URL}/api/shifts",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json={
+                "date": date,
+                "startTime": start,
+                "endTime": end,
+                "assignToSelf": True
+            },
+            timeout=10
         )
-        await conn.close()
-        logger.info(f"Слот добавлен в БД: {date} {time} [{status}]")
+        if r.status_code in (200, 201):
+            logger.info(f"Слот {date} {start}-{end} добавлен")
+            return True
+        else:
+            logger.warning(f"Ошибка API добавления слота {r.status_code}: {r.text}")
+            return False
     except Exception as e:
-        logger.error(f"Ошибка при добавлении смены: {e}")
+        logger.error(f"Ошибка при добавлении слота: {e}")
+        return False
 
+# === Вспомогательная функция парсинга ===
+def parse_slot_input(text: str):
+    text = text.lower().strip()
+    today = datetime.now().date()
+    if text.startswith("сегодня"):
+        date = today
+        time_part = text.replace("сегодня", "").strip()
+    elif text.startswith("завтра"):
+        date = today + timedelta(days=1)
+        time_part = text.replace("завтра", "").strip()
+    else:
+        match = re.match(r"(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}:\d{2})-(\d{2}:\d{2})", text)
+        if not match:
+            return None
+        d, m, y, start, end = match.groups()
+        date = datetime(int(y), int(m), int(d)).date()
+        return {"date": date.strftime("%Y-%m-%d"), "start": start, "end": end}
 
-# === START ===
+    match = re.match(r"(\d{2}:\d{2})-(\d{2}:\d{2})", time_part)
+    if not match:
+        return None
+    start, end = match.groups()
+    return {"date": date.strftime("%Y-%m-%d"), "start": start, "end": end}
+
+# === Хэндлеры ===
 @dp.message(Command("start"))
-async def start(message: Message, state: FSMContext):
-    logger.info(f"/start от {message.from_user.id}")
+async def start_cmd(message: Message, state: FSMContext):
     await message.answer("Введите логин:")
     await state.set_state(AuthState.waiting_for_login)
 
 
-# === LOGIN ===
 @dp.message(StateFilter(AuthState.waiting_for_login))
-async def get_login(message: Message, state: FSMContext):
-    logger.info(f"Получен логин: {message.text}")
+async def login_input(message: Message, state: FSMContext):
     await state.update_data(login=message.text.strip())
     await message.answer("Введите пароль:")
     await state.set_state(AuthState.waiting_for_password)
 
 
-# === PASSWORD ===
 @dp.message(StateFilter(AuthState.waiting_for_password))
-async def get_password(message: Message, state: FSMContext):
+async def password_input(message: Message, state: FSMContext):
     data = await state.get_data()
     login = data.get("login")
     password = message.text.strip()
 
-    logger.info(f"Попытка входа: {login}")
-    user_id = await db_get_user(login, password)
-    if user_id:
-        await state.update_data(user_id=user_id)
-        await message.answer(f"✅ Успешный вход! Добро пожаловать, {login}")
-        await state.clear()
+    api_key = await get_api_key(login, password)
+    if api_key:
+        await state.update_data(api_key=api_key)
+        await state.set_state(SlotState.waiting_for_slots)
+        await message.answer("✅ Вход успешен!\nТеперь отправьте слот в формате:\n`26.08.2025 09:00-17:00`\nили `сегодня 10:00-15:00`", parse_mode="Markdown")
     else:
-        logger.warning(f"Неуспешный вход: {login}")
-        await message.answer("❌ Неверный логин или пароль. Попробуйте снова: /start")
+        await message.answer("❌ Ошибка входа. Попробуйте снова: /start")
         await state.clear()
 
 
-# === ADD SHIFTS ===
-@dp.message(Command("add"))
-async def add_shifts(message: Message, state: FSMContext):
-    logger.info(f"{message.from_user.id} начал добавление смен")
-    await message.answer("Отправьте скриншоты смен. Когда закончите, напишите /done")
-    await state.set_state(AddShiftState.waiting_for_photos)
-
-
-@dp.message(StateFilter(AddShiftState.waiting_for_photos), F.photo)
-async def handle_photos(message: Message, state: FSMContext):
-    file = await bot.get_file(message.photo[-1].file_id)
-    os.makedirs("downloads", exist_ok=True)
-    file_path = f"downloads/{file.file_unique_id}.png"
-    await bot.download_file(file.file_path, destination=file_path)
-
+@dp.message(StateFilter(SlotState.waiting_for_slots))
+async def add_slot_handler(message: Message, state: FSMContext):
     data = await state.get_data()
-    photos = data.get("photos", [])
-    photos.append(file_path)
-    await state.update_data(photos=photos)
+    api_key = data.get("api_key")
 
-    logger.info(f"Скриншот сохранён: {file_path}")
-    await message.answer("✅ Скриншот получен")
-
-
-@dp.message(Command("done"), StateFilter(AddShiftState.waiting_for_photos))
-async def confirm_slots(message: Message, state: FSMContext):
-    data = await state.get_data()
-    photos = data.get("photos", [])
-
-    if not photos:
-        logger.warning("Нет скриншотов")
-        await message.answer("Вы не отправили скриншоты")
-        await state.clear()
+    slot = parse_slot_input(message.text)
+    if not slot:
+        await message.answer("⚠️ Неверный формат. Пример: `31.12.2025 20:00-23:00`", parse_mode="Markdown")
         return
 
-    all_slots = []
-    for p in photos:
-        try:
-            logger.info(f"Обработка скриншота: {p}")
-            slots = parse_slots(p)
-            logger.info(f"Найдено слотов: {len(slots)} → {slots}")
-            all_slots.extend(slots)
-        except Exception as e:
-            logger.error(f"Ошибка OCR для {p}: {e}")
-
-    if not all_slots:
-        await message.answer("❌ Не удалось распознать слоты.")
-        await state.clear()
-        return
-
-    await state.update_data(slots=all_slots)
-    slots_text = "\n".join([f"{s['date']} {s['time']} [{s['status']}]" for s in all_slots])
-
-    logger.info(f"Слоты готовы к подтверждению: {slots_text}")
-    await message.answer(f"📋 Найдены следующие слоты:\n\n{slots_text}\n\nПодтвердить? (yes/no)")
-    await state.set_state(AddShiftState.confirming)
-
-
-@dp.message(StateFilter(AddShiftState.confirming), F.text.lower() == "yes")
-async def confirm_yes(message: Message, state: FSMContext):
-    data = await state.get_data()
-    slots = data.get("slots", [])
-    user_id = data.get("user_id")
-
-    logger.info(f"Подтверждение слотов пользователем {message.from_user.id}")
-
-    if not user_id:
-        logger.error("Нет user_id в FSM")
-        await message.answer("❌ Ошибка: пользователь не авторизован")
-        await state.clear()
-        return
-
-    for s in slots:
-        await db_add_shift(user_id, s["date"], s["time"], s["status"])
-
-    await message.answer(f"✅ {len(slots)} смен сохранено в БД!")
-    await state.clear()
-
-
-@dp.message(StateFilter(AddShiftState.confirming), F.text.lower() == "no")
-async def confirm_no(message: Message, state: FSMContext):
-    logger.info(f"Пользователь {message.from_user.id} отменил добавление смен")
-    await message.answer("❌ Отменено")
-    await state.clear()
+    ok = await add_shift(api_key, slot["date"], slot["start"], slot["end"])
+    if ok:
+        await message.answer(f"✅ Слот добавлен: {slot['date']} {slot['start']}-{slot['end']}")
+    else:
+        await message.answer("❌ Ошибка при добавлении слота. Проверьте логи.")
 
 
 # === MAIN ===

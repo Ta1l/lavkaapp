@@ -1,44 +1,43 @@
 // src/middleware.ts
-import { NextResponse } from "next/server";
-import type { NextRequest } from "next/server";
 
-// Публичные маршруты (без авторизации)
-const isPublicPath = (pathname: string) =>
-  pathname === "/" ||
-  pathname === "/favicon.ico" ||
-  pathname === "/api/auth" ||
-  pathname === "/api/auth/logout";
+import { NextResponse } from 'next/server';
+import type { NextRequest } from 'next/server';
+
+// Список путей, которые не требуют аутентификации
+const publicPaths = [
+    '/',             // Главная страница
+    '/api/auth',     // [ИЗМЕНЕНО] Теперь это префикс, а не точный путь
+    '/favicon.ico',
+];
 
 export function middleware(request: NextRequest) {
-  const { pathname } = request.nextUrl;
+    const path = request.nextUrl.pathname;
 
-  // Пропускаем статические ассеты
-  if (
-    pathname.startsWith("/_next/static") ||
-    pathname.startsWith("/_next/image") ||
-    pathname === "/favicon.ico"
-  ) {
+    // [ИСПРАВЛЕНО] Логика проверки теперь использует startsWith для /api/auth
+    // Это разрешит доступ и к /api/auth, и к /api/auth/get-token, и к /api/auth/logout
+    const isPublicPath = publicPaths.some(publicPath =>
+        path === publicPath || (publicPath === '/api/auth' && path.startsWith(publicPath))
+    );
+
+    const sessionCookie = request.cookies.get('auth-session');
+
+    if (isPublicPath) {
+        // Если путь публичный, ничего не делаем
+        return NextResponse.next();
+    }
+
+    if (!sessionCookie) {
+        // Если путь защищенный и нет сессии, редирект на главную
+        return NextResponse.redirect(new URL('/', request.url));
+    }
+    
+    // Если сессия есть, пропускаем
     return NextResponse.next();
-  }
-
-  const sessionCookie = request.cookies.get("auth-session");
-
-  // Авторизованный пользователь не должен попадать на логин
-  if (pathname === "/" && sessionCookie) {
-    return NextResponse.redirect(new URL("/schedule/0", request.url));
-  }
-
-  // Для всех остальных путей — обязателен сеанс
-  if (!isPublicPath(pathname) && !sessionCookie) {
-    const url = request.nextUrl.clone();
-    url.pathname = "/";
-    return NextResponse.redirect(url);
-  }
-
-  return NextResponse.next();
 }
 
-// Матчер — всё, кроме статических файлов
+// Конфигурация matcher остается без изменений
 export const config = {
-  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+    matcher: [
+        '/((?!_next/static|_next/image|favicon.ico).*)',
+    ],
 };

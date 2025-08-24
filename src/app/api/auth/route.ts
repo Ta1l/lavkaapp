@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { pool } from '@/lib/db';
 import { cookies } from 'next/headers';
 import { User } from '@/types/shifts';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs'; // [ФИНАЛЬНОЕ ИСПРАВЛЕНИЕ] Заменено на bcryptjs
 import crypto from 'crypto';
 
 const SALT_ROUNDS = 10;
@@ -19,7 +19,18 @@ export async function POST(request: NextRequest) {
         const existingUserResult = await pool.query('SELECT * FROM users WHERE username = $1', [username]);
         const existingUser: (User & { password: string, api_key: string }) | null = existingUserResult?.rows[0] || null;
 
-        if (action === 'register') { /* ... код регистрации ... */ }
+        if (action === 'register') {
+            if (existingUser) return NextResponse.json({ error: 'Пользователь уже существует' }, { status: 409 });
+            const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+            const newUserResult = await pool.query(
+                'INSERT INTO users (username, password) VALUES ($1, $2) RETURNING id, username, full_name',
+                [username, hashedPassword]
+            );
+            const user = newUserResult.rows[0];
+            const sessionData = { id: user.id, username: user.username };
+            cookies().set('auth-session', JSON.stringify(sessionData), { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 60 * 60 * 24 * 7, path: '/' });
+            return NextResponse.json({ message: 'Регистрация успешна!' });
+        }
 
         if (action === 'login') {
             if (!existingUser) return NextResponse.json({ error: 'Неверные учетные данные' }, { status: 401 });
@@ -27,16 +38,14 @@ export async function POST(request: NextRequest) {
             let isPasswordCorrect = false;
             const passwordInDb = existingUser.password;
 
-            try {
-                if (BCRYPT_PREFIX_REGEX.test(passwordInDb)) {
-                    isPasswordCorrect = await bcrypt.compare(password, passwordInDb);
+            if (BCRYPT_PREFIX_REGEX.test(passwordInDb)) {
+                isPasswordCorrect = await bcrypt.compare(password, passwordInDb);
+            } else {
+                if (password === passwordInDb) {
+                    isPasswordCorrect = true;
+                    const newHashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+                    await pool.query('UPDATE users SET password = $1 WHERE id = $2', [newHashedPassword, existingUser.id]);
                 }
-            } catch (e) { isPasswordCorrect = false; }
-
-            if (!isPasswordCorrect && password === passwordInDb) {
-                isPasswordCorrect = true;
-                const newHashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
-                await pool.query('UPDATE users SET password = $1 WHERE id = $2', [newHashedPassword, existingUser.id]);
             }
 
             if (!isPasswordCorrect) return NextResponse.json({ error: 'Неверные учетные данные' }, { status: 401 });
@@ -47,6 +56,10 @@ export async function POST(request: NextRequest) {
                 apiKey = crypto.randomBytes(16).toString('hex');
                 await pool.query("UPDATE users SET api_key = $1 WHERE id = $2", [apiKey, user.id]);
             }
+            // Устанавливаем cookie и для логина тоже
+            const sessionData = { id: user.id, username: user.username };
+            cookies().set('auth-session', JSON.stringify(sessionData), { httpOnly: true, secure: process.env.NODE_ENV === 'production', maxAge: 60 * 60 * 24 * 7, path: '/' });
+            
             return NextResponse.json({ message: 'Вход успешен!', apiKey });
         }
         

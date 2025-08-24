@@ -1,10 +1,9 @@
 import logging
 import asyncio
-import os
+import aiohttp  # <--- ИЗМЕНЕНИЕ
 import re
-import requests
 from datetime import datetime, timedelta
-from aiogram import Bot, Dispatcher, F
+from aiogram import Bot, Dispatcher
 from aiogram.types import Message
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
@@ -13,7 +12,7 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 # === Конфиг ===
 API_TOKEN = "8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM"
-WEBAPP_URL = "https://slotworker.ru"
+WEBAPP_URL = "https://slotworker.ru" 
 
 # === Логирование ===
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -30,45 +29,51 @@ class AuthState(StatesGroup):
 class SlotState(StatesGroup):
     waiting_for_slots = State()
 
-# === API Функции ===
+# === API Функции (переписаны на aiohttp) ===
 async def get_api_key(username: str, password: str) -> str | None:
     try:
-        r = requests.post(
-            f"{WEBAPP_URL}/api/auth/get-token",
-            json={"username": username, "password": password},
-            timeout=10
-        )
-        if r.status_code == 200:
-            api_key = r.json().get("apiKey")
-            logger.info(f"Получен apiKey для {username}")
-            return api_key
-        else:
-            logger.warning(f"Ошибка API аутентификации {r.status_code}: {r.text}")
-            return None
+        # ИЗМЕНЕНИЕ: Используем aiohttp для асинхронных запросов
+        async with aiohttp.ClientSession() as session:
+            # ИЗМЕНЕНИЕ: Добавлен слэш в конце URL
+            async with session.post(
+                f"{WEBAPP_URL}/api/auth/get-token/",
+                json={"username": username, "password": password},
+                timeout=10
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    api_key = data.get("apiKey")
+                    logger.info(f"Получен apiKey для {username}")
+                    return api_key
+                else:
+                    logger.warning(f"Ошибка API аутентификации {response.status}: {await response.text()}")
+                    return None
     except Exception as e:
         logger.error(f"Ошибка при запросе токена: {e}")
         return None
 
-
 async def add_shift(api_key: str, date: str, start: str, end: str) -> bool:
     try:
-        r = requests.post(
-            f"{WEBAPP_URL}/api/shifts",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json={
-                "date": date,
-                "startTime": start,
-                "endTime": end,
-                "assignToSelf": True
-            },
-            timeout=10
-        )
-        if r.status_code in (200, 201):
-            logger.info(f"Слот {date} {start}-{end} добавлен")
-            return True
-        else:
-            logger.warning(f"Ошибка API добавления слота {r.status_code}: {r.text}")
-            return False
+        # ИЗМЕНЕНИЕ: Используем aiohttp
+        async with aiohttp.ClientSession() as session:
+            # ИЗМЕНЕНИЕ: Добавлен слэш в конце URL
+            async with session.post(
+                f"{WEBAPP_URL}/api/shifts/",
+                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                json={
+                    "date": date,
+                    "startTime": start,
+                    "endTime": end,
+                    "assignToSelf": True
+                },
+                timeout=10
+            ) as response:
+                if response.status in (200, 201):
+                    logger.info(f"Слот {date} {start}-{end} добавлен")
+                    return True
+                else:
+                    logger.warning(f"Ошибка API добавления слота {response.status}: {await response.text()}")
+                    return False
     except Exception as e:
         logger.error(f"Ошибка при добавлении слота: {e}")
         return False
@@ -77,6 +82,8 @@ async def add_shift(api_key: str, date: str, start: str, end: str) -> bool:
 def parse_slot_input(text: str):
     text = text.lower().strip()
     today = datetime.now().date()
+    time_part = text
+    
     if text.startswith("сегодня"):
         date = today
         time_part = text.replace("сегодня", "").strip()
@@ -84,20 +91,25 @@ def parse_slot_input(text: str):
         date = today + timedelta(days=1)
         time_part = text.replace("завтра", "").strip()
     else:
-        match = re.match(r"(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}:\d{2})-(\d{2}:\d{2})", text)
-        if not match:
-            return None
-        d, m, y, start, end = match.groups()
-        date = datetime(int(y), int(m), int(d)).date()
+        # Универсальный парсинг даты и времени
+        match = re.match(r"(\d{1,2}\.\d{1,2}\.\d{4})\s*(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", text)
+        if match:
+            date_str, start, end = match.groups()
+            try:
+                date = datetime.strptime(date_str, "%d.%m.%Y").date()
+                return {"date": date.strftime("%Y-%m-%d"), "start": start, "end": end}
+            except ValueError:
+                return None
+    
+    # Парсинг только времени, если было "сегодня" или "завтра"
+    match_time = re.match(r"(\d{1,2}:\d{2})-(\d{1,2}:\d{2})", time_part)
+    if match_time and 'date' in locals():
+        start, end = match_time.groups()
         return {"date": date.strftime("%Y-%m-%d"), "start": start, "end": end}
+        
+    return None
 
-    match = re.match(r"(\d{2}:\d{2})-(\d{2}:\d{2})", time_part)
-    if not match:
-        return None
-    start, end = match.groups()
-    return {"date": date.strftime("%Y-%m-%d"), "start": start, "end": end}
-
-# === Хэндлеры ===
+# === Хэндлеры (без изменений) ===
 @dp.message(Command("start"))
 async def start_cmd(message: Message, state: FSMContext):
     await message.answer("Введите логин:")
@@ -141,7 +153,7 @@ async def add_slot_handler(message: Message, state: FSMContext):
     if ok:
         await message.answer(f"✅ Слот добавлен: {slot['date']} {slot['start']}-{slot['end']}")
     else:
-        await message.answer("❌ Ошибка при добавлении слота. Проверьте логи.")
+        await message.answer("❌ Ошибка при добавлении слота. Проверьте логи сервера.")
 
 
 # === MAIN ===

@@ -1,3 +1,4 @@
+import os
 import re
 import locale
 from datetime import datetime
@@ -6,54 +7,49 @@ from typing import List, Dict, Optional, Any
 import pytesseract
 from PIL import Image
 
-# Для корректного распознавания русских месяцев, устанавливаем локаль.
-# Это лучший способ, чем ручной словарь, т.к. учитывает падежи ("августа").
+# Устанавливаем русскую локаль для корректного парсинга месяцев
 try:
     locale.setlocale(locale.LC_TIME, 'ru_RU.UTF-8')
 except locale.Error:
-    print("Внимание: русская локаль ru_RU.UTF-8 не найдена. Парсинг дат может быть неточным.")
-    print("Для Windows попробуйте: locale.setlocale(locale.LC_TIME, 'Russian_Russia.1251')")
-
+    print("Внимание: Русская локаль ru_RU.UTF-8 не установлена.")
 
 class SlotParser:
     """
-    Класс для парсинга слотов из текста, распознанного с изображения.
+    Класс для парсинга слотов из текста, который был распознан с одного или нескольких изображений.
+    Адаптирован под новый формат скриншотов.
     """
-    # Более точный паттерн для даты: число, затем слово (месяц)
-    # \b - граница слова, чтобы не находить часть слова
+    # Паттерн для даты остался прежним: "25 августа"
     DATE_PATTERN = re.compile(r"^\b(\d{1,2})\s+([а-я]+)\b", re.IGNORECASE)
     
-    # Паттерн для времени, статуса и адреса.
-    # Захватывает время, затем опционально статус в скобках, и остаток строки как адрес.
+    # --- ИЗМЕНЕНИЕ: Новый, более простой паттерн для строки слота ---
+    # Ищет "ВРЕМЯ - ВРЕМЯ • СТАТУС"
     SLOT_PATTERN = re.compile(
-        r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})"  # Группы 1 и 2: время начала и конца
-        r"(?:\s+\(([^)]+)\))?"                      # Группа 3 (опционально): статус в скобках
-        r"\s*(.*)"                                  # Группа 4: остаток строки (адрес)
+        r"(\d{1,2}:\d{2})\s*-\s*(\d{1,2}:\d{2})\s*•\s*(.*)", re.IGNORECASE
     )
 
-    def __init__(self, text: str, year: int):
-        self.text_lines = text.splitlines()
+    def __init__(self, year: int):
         self.year = year
         self.current_date: Optional[datetime.date] = None
         self.parsed_slots: List[Dict[str, Any]] = []
 
-    def parse(self) -> List[Dict[str, Any]]:
-        """Главный метод, который итерируется по строкам и парсит их."""
-        for line in self.text_lines:
+    def parse(self, text: str) -> List[Dict[str, Any]]:
+        """
+        Главный метод, который парсит переданный блок текста.
+        Может вызываться многократно для текста с разных скриншотов.
+        """
+        for line in text.splitlines():
             line = line.strip()
             if not line:
                 continue
 
-            # Сначала пытаемся распознать строку как дату.
-            # Если успешно, обновляем текущую дату и переходим к следующей строке.
+            # Если строка - это дата, обновляем текущую дату и идем дальше
             if self._parse_date_from_line(line):
                 continue
 
-            # Если это не дата, пытаемся распознать как слот.
-            # Для этого должна быть установлена текущая дата.
+            # Если это не дата, и у нас есть текущая дата, пытаемся распознать слот
             if self.current_date:
                 self._parse_slot_from_line(line)
-
+        
         return self.parsed_slots
 
     def _parse_date_from_line(self, line: str) -> bool:
@@ -62,87 +58,74 @@ class SlotParser:
         if match:
             day_str, month_str = match.groups()
             try:
-                # Используем установленную русскую локаль для парсинга названия месяца
                 date_str = f"{day_str} {month_str} {self.year}"
                 self.current_date = datetime.strptime(date_str, "%d %B %Y").date()
                 return True
             except ValueError:
-                # Если не удалось распознать месяц, сбрасываем дату
                 self.current_date = None
                 return False
         return False
 
     def _parse_slot_from_line(self, line: str):
-        """Пытается извлечь детали слота (время, статус, адрес) из строки."""
-        match = self.SLOT_PATTERN.search(line)
+        """Пытается извлечь детали слота (время и статус) из строки."""
+        match = self.SLOT_PATTERN.match(line)
         if match and self.current_date:
-            start_time_str, end_time_str, status, address = match.groups()
-
-            # Если статус не был найден в скобках, пытаемся найти его по ключевым словам
-            if not status:
-                if "выполнен с опозданием" in line.lower():
-                    status = "выполнен с опозданием"
-                elif "выполнен" in line.lower():
-                    status = "выполнен"
-                elif "отмен" in line.lower(): # для "отменен", "отменён"
-                    status = "отменён"
-                else:
-                    status = "неизвестно"
+            start_time_str, end_time_str, status = match.groups()
             
             self.parsed_slots.append({
                 "date": self.current_date.strftime("%Y-%m-%d"),
-                "start_time": start_time_str,
-                "end_time": end_time_str,
+                "start_time": start_time_str.strip(),
+                "end_time": end_time_str.strip(),
                 "status": status.strip(),
-                "address": address.strip() if address else "Адрес не распознан"
             })
 
-def parse_slots_from_image(image_path: str, lang: str = 'rus') -> List[Dict[str, Any]]:
+def process_slot_screenshots(directory: str, lang: str = 'rus') -> List[Dict[str, Any]]:
     """
-    Извлекает информацию о слотах из изображения.
+    Обрабатывает все изображения из указанной папки и извлекает из них слоты.
     
-    :param image_path: Путь к файлу изображения.
-    :param lang: Язык для распознавания текста (по умолчанию 'rus').
-    :return: Список словарей с информацией о слотах.
+    :param directory: Путь к папке со скриншотами.
+    :param lang: Язык для распознавания.
+    :return: Единый список всех распознанных слотов.
     """
-    try:
-        img = Image.open(image_path)
-        # Получаем текущий год, чтобы не хардкодить его
-        current_year = datetime.now().year
-        
-        # Распознаем текст с изображения
-        text = pytesseract.image_to_string(img, lang=lang)
-        
-        # Создаем экземпляр парсера и запускаем процесс
-        parser = SlotParser(text, year=current_year)
-        slots = parser.parse()
-        
-        return slots
+    if not os.path.isdir(directory):
+        print(f"Ошибка: Директория '{directory}' не найдена.")
+        return []
 
-    except FileNotFoundError:
-        print(f"Ошибка: Файл не найден по пути {image_path}")
-        return []
-    except Exception as e:
-        print(f"Произошла непредвиденная ошибка: {e}")
-        return []
+    # Получаем текущий год один раз
+    current_year = datetime.now().year
+    parser = SlotParser(year=current_year)
+    
+    # Получаем список файлов и сортируем их по имени для правильного порядка
+    image_files = sorted([f for f in os.listdir(directory) if f.lower().endswith(('.png', '.jpg', '.jpeg'))])
+    
+    print(f"Найдено {len(image_files)} изображений для обработки.")
+
+    for filename in image_files:
+        image_path = os.path.join(directory, filename)
+        try:
+            print(f"Обрабатываем файл: {filename}...")
+            img = Image.open(image_path)
+            text = pytesseract.image_to_string(img, lang=lang)
+            # Передаем новый текст в тот же экземпляр парсера
+            parser.parse(text)
+        except Exception as e:
+            print(f"Не удалось обработать файл {filename}. Ошибка: {e}")
+            
+    return parser.parsed_slots
 
 # === Пример использования ===
 if __name__ == '__main__':
-    # Указываем путь к твоему новому тестовому файлу
-    image_file = 'photo_2025-08-27_01-08-00.jpg'
+    # Указываем путь к папке со скриншотами
+    screenshots_directory = 'slots'
     
-    print(f"Запускаем распознавание для файла: {image_file}\n")
+    print(f"Запускаем распознавание для всех файлов в папке: '{screenshots_directory}'\n")
     
-    extracted_slots = parse_slots_from_image(image_file)
+    all_extracted_slots = process_slot_screenshots(screenshots_directory)
     
-    if extracted_slots:
-        print("Распознанные слоты:")
-        for i, slot in enumerate(extracted_slots, 1):
-            print(f"--- Слот #{i} ---")
-            print(f"  Дата: {slot['date']}")
-            print(f"  Время: {slot['start_time']} - {slot['end_time']}")
-            print(f"  Статус: {slot['status']}")
-            print(f"  Адрес: {slot['address']}")
-            print("-" * 15)
+    if all_extracted_slots:
+        print("\n--- ИТОГОВЫЙ РЕЗУЛЬТАТ ---")
+        print(f"Всего распознано слотов: {len(all_extracted_slots)}")
+        for i, slot in enumerate(all_extracted_slots, 1):
+            print(f"  {i}. {slot['date']} | {slot['start_time']}-{slot['end_time']} | Статус: {slot['status']}")
     else:
-        print("Не удалось распознать слоты.")
+        print("\nНе удалось распознать ни одного слота.")

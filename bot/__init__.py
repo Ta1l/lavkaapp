@@ -5,7 +5,7 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Конфиг через env (можно переопределить)
-API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "YOUR_TELEGRAM_BOT_TOKEN")
+API_TOKEN = os.getenv("8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://slotworker.ru")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./user_uploads")
 

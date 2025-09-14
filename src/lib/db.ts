@@ -6,7 +6,7 @@ const dbConfig = {
   user: process.env.POSTGRES_USER || 'lavka_user',
   host: process.env.POSTGRES_HOST || 'localhost',
   database: process.env.POSTGRES_DATABASE || 'schedule_db',
-  password: process.env.POSTGRES_PASSWORD || 'hw6uxxs9*Hz5',
+  password: process.env.POSTGRES_PASSWORD || 'a_brand_new_password_2025', // Обновите пароль!
   port: Number(process.env.POSTGRES_PORT || 5432),
   max: 10,
   idleTimeoutMillis: 30000,

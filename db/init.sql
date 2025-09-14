@@ -10,7 +10,9 @@ CREATE TABLE users (
     id SERIAL PRIMARY KEY,
     username TEXT NOT NULL UNIQUE,
     password TEXT NOT NULL,
-    full_name TEXT
+    full_name TEXT,
+    api_key VARCHAR(255),  -- Добавлено поле api_key
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT now()
 );
 
 CREATE TABLE shifts (
@@ -27,6 +29,7 @@ CREATE TABLE shifts (
 
 CREATE INDEX idx_shifts_shift_date ON shifts(shift_date);
 CREATE INDEX idx_shifts_user_date ON shifts(user_id, shift_date);
+CREATE INDEX idx_users_api_key ON users(api_key); -- Индекс для быстрого поиска по api_key
 
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$

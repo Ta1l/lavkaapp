@@ -5,11 +5,11 @@ from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 
 # Конфиг через env (можно переопределить)
-API_TOKEN = os.getenv("8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM")
+API_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "8457174750:AAHAz3tAjrUkEPZHX1mJvuDUJj7YkzbhlMM")
 WEBAPP_URL = os.getenv("WEBAPP_URL", "https://slotworker.ru")
 UPLOAD_DIR = os.getenv("UPLOAD_DIR", "./user_uploads")
 
-# Логирование (не вызываем basicConfig здесь, делай это в точке запуска)
+# Логирование
 logger = logging.getLogger("lavka.bot")
 logger.setLevel(logging.INFO)
 
@@ -20,7 +20,6 @@ def register_all_handlers():
     """
     Импортируем и регистрируем обработчики. Вызывать при старте (один раз).
     """
-    # локальный импорт чтобы избежать циклических импорта при импорте пакета
     from .handlers import auth, slots
     auth.register_handlers(dp)
     slots.register_handlers(dp)

@@ -1,4 +1,9 @@
-# bot.py
+#!/usr/bin/env python3
+# main.py (бывший bot.py)
+"""
+Главный файл для запуска Telegram бота.
+"""
+
 import asyncio
 import logging
 import os
@@ -22,7 +27,14 @@ async def main():
     logger.info(f"📤 Папка для загрузок: {os.path.abspath(UPLOAD_DIR)}")
     
     # Регистрируем все обработчики, описанные в bot/handlers/
-    register_all_handlers() # 
+    register_all_handlers()
+    
+    # Получаем информацию о боте
+    try:
+        bot_info = await bot.get_me()
+        logger.info(f"✅ Бот запущен: @{bot_info.username}")
+    except Exception as e:
+        logger.error(f"❌ Ошибка при получении информации о боте: {e}")
     
     # Запускаем бота
     # bot.delete_webhook используется на случай, если бот был где-то запущен на вебхуках

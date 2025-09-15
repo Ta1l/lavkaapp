@@ -7,10 +7,8 @@ import type { NextRequest } from 'next/server';
 const publicPaths = [
     '/',             // Главная страница (форма входа)
     '/api/auth',     // API для входа, регистрации, выхода
-    
-    // --- КЛЮЧЕВОЕ ИЗМЕНЕНИЕ: Добавляем API-пути для бота ---
     '/api/shifts',   // API для получения списка смен
-    '/api/slots',    // API для управления слотами (добавление/удаление)
+    '/api/slots',    // API для управления слотами
 ];
 
 export function middleware(request: NextRequest) {
@@ -21,25 +19,30 @@ export function middleware(request: NextRequest) {
         path.startsWith(publicPath)
     );
     
-    // Если путь публичный, middleware пропускает запрос дальше
+    // Если путь публичный, пропускаем
     if (isPublicPath) {
         return NextResponse.next();
     }
     
-    // --- Логика защиты для НЕ-публичных путей (например, /schedule, /top) ---
+    // Для API запросов с Bearer токеном тоже пропускаем
+    if (path.startsWith('/api/') && request.headers.get('authorization')?.startsWith('Bearer ')) {
+        return NextResponse.next();
+    }
+    
+    // Проверка cookie для защищенных путей
     const sessionCookie = request.cookies.get('auth-session');
 
     if (!sessionCookie) {
-        // Если путь защищенный и нет cookie сессии, редирект на главную
+        // Для API возвращаем 401, для страниц - редирект
+        if (path.startsWith('/api/')) {
+            return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+        }
         return NextResponse.redirect(new URL('/', request.url));
     }
     
-    // Если сессия есть, пропускаем
     return NextResponse.next();
 }
 
-// Конфигурация matcher остается. Она эффективно применяет middleware ко всем запросам,
-// кроме статических файлов.
 export const config = {
     matcher: [
         '/((?!_next/static|_next/image|favicon.ico).*)',

@@ -1,3 +1,5 @@
+// src/app/schedule/[offset]
+
 "use client";
 
 import React, { useEffect, useState } from "react";

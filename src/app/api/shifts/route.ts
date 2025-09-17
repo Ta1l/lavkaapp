@@ -154,64 +154,33 @@ export async function POST(request: NextRequest) {
     try {
       await client.query('BEGIN');
       
-      // Проверяем существующий слот
+      // ИСПРАВЛЕНИЕ: Проверяем существующий слот ТОЛЬКО для текущего пользователя
       const existing = await client.query(
-        'SELECT * FROM shifts WHERE shift_date = $1 AND shift_code = $2',
-        [dateStr, shiftCode]
+        'SELECT * FROM shifts WHERE shift_date = $1 AND shift_code = $2 AND user_id = $3',
+        [dateStr, shiftCode, currentUser.id]
       );
 
       if ((existing.rowCount ?? 0) > 0) {
-        const existingShift = existing.rows[0];
-        console.log('[POST /api/shifts] Shift already exists:', existingShift);
-        
-        // НОВАЯ ЛОГИКА: Проверяем владельца слота
-        if (existingShift.user_id && existingShift.user_id !== currentUser.id) {
-          // Слот занят другим пользователем - возвращаем ошибку
-          await client.query('COMMIT');
-          console.log('[POST /api/shifts] Conflict: shift taken by user', existingShift.user_id);
-          return NextResponse.json({ 
-            error: 'Shift already taken by another user',
-            conflict: true,
-            existingUserId: existingShift.user_id,
-            currentUserId: currentUser.id
-          }, { status: 409 }); // 409 Conflict
-          
-        } else if (existingShift.user_id === currentUser.id) {
-          // Слот уже принадлежит текущему пользователю - это нормально
-          await client.query('COMMIT');
-          console.log('[POST /api/shifts] Shift already belongs to current user');
-          return NextResponse.json(existingShift, { status: 200 });
-          
-        } else if (!existingShift.user_id && assignToSelf) {
-          // Слот свободен и пользователь хочет его взять - обновляем
-          const update = await client.query(
-            'UPDATE shifts SET user_id = $1, status = $2, updated_at = NOW() WHERE id = $3 RETURNING *',
-            [currentUser.id, 'pending', existingShift.id]
-          );
-          await client.query('COMMIT');
-          console.log('[POST /api/shifts] Assigned existing free shift to user:', update.rows[0]);
-          return NextResponse.json(update.rows[0], { status: 200 });
-          
-        } else {
-          // Слот свободен, но пользователь не хочет его брать
-          await client.query('COMMIT');
-          console.log('[POST /api/shifts] Returning existing free shift');
-          return NextResponse.json(existingShift, { status: 200 });
-        }
+        // Пользователь уже имеет этот слот
+        await client.query('COMMIT');
+        console.log('[POST /api/shifts] User already has this shift:', existing.rows[0]);
+        return NextResponse.json(existing.rows[0], { status: 200 });
       }
       
-      // Слот не существует - создаем новый
+      // Слот не существует у этого пользователя - создаем новый
       const userId = assignToSelf ? currentUser.id : null;
       const status = assignToSelf ? 'pending' : 'available';
+      
       const insert = await client.query(
         `INSERT INTO shifts (shift_date, day_of_week, shift_code, status, user_id)
          VALUES ($1, EXTRACT(ISODOW FROM $1::date), $2, $3, $4)
          RETURNING *`,
         [dateStr, shiftCode, status, userId]
       );
+      
       await client.query('COMMIT');
       
-      console.log('[POST /api/shifts] New shift created:', insert.rows[0]);
+      console.log('[POST /api/shifts] New shift created for user:', insert.rows[0]);
       return NextResponse.json(insert.rows[0], { status: 201 });
 
     } catch (err) {
@@ -247,28 +216,20 @@ export async function DELETE(request: NextRequest) {
   try {
     await client.query('BEGIN');
     
-    console.log(`[API Shifts DELETE] User ${currentUser.id} starting to clear day ${dateStr}`);
+    console.log(`[API Shifts DELETE] User ${currentUser.id} clearing their shifts for ${dateStr}`);
 
-    // Шаг 1: Освобождаем все слоты, занятые ТЕКУЩИМ пользователем в этот день
-    const releaseResult = await client.query(
-      `UPDATE shifts SET user_id = NULL, status = 'available', updated_at = NOW() 
-       WHERE shift_date = $1 AND user_id = $2`,
+    // ИСПРАВЛЕНИЕ: Удаляем только слоты ТЕКУЩЕГО пользователя
+    const deleteResult = await client.query(
+      `DELETE FROM shifts WHERE shift_date = $1 AND user_id = $2`,
       [dateStr, currentUser.id]
     );
-    console.log(`[API Shifts DELETE] Released ${releaseResult.rowCount} slots taken by user ${currentUser.id}.`);
-
-    // Шаг 2: Удаляем все СВОБОДНЫЕ слоты в этот день
-    const deleteResult = await client.query(
-      `DELETE FROM shifts WHERE shift_date = $1 AND user_id IS NULL`,
-      [dateStr]
-    );
-    console.log(`[API Shifts DELETE] Deleted ${deleteResult.rowCount} available slots.`);
+    
+    console.log(`[API Shifts DELETE] Deleted ${deleteResult.rowCount} shifts for user ${currentUser.id}.`);
 
     await client.query('COMMIT');
 
     return NextResponse.json({ 
       ok: true, 
-      releasedCount: releaseResult.rowCount ?? 0,
       deletedCount: deleteResult.rowCount ?? 0,
     });
 

@@ -15,7 +15,7 @@ interface MainProps {
     isLoading?: boolean;
     currentUserId: number | null;
     onTakeSlot: (day: Day, slot: TimeSlot) => void;
-    onDeleteSlot: (day: Day, slotId: number) => void; // <--- ИЗМЕНЕНО НАЗВАНИЕ
+    onDeleteSlot: (day: Day, slotId: number) => void;
     onAddSlot: (day: Day) => void;
     onDeleteDaySlots: (day: Day) => void;
     isOwner: boolean;
@@ -25,7 +25,7 @@ function DayRow({
     day,
     currentUserId,
     onTakeSlot,
-    onDeleteSlot, // <--- ИЗМЕНЕНО НАЗВАНИЕ
+    onDeleteSlot,
     onAddSlot,
     onDeleteDaySlots,
     isOwner,
@@ -33,24 +33,24 @@ function DayRow({
     day: Day;
     currentUserId: number | null;
     onTakeSlot: (day: Day, slot: TimeSlot) => void;
-    onDeleteSlot: (day: Day, slotId: number) => void; // <--- ИЗМЕНЕНО НАЗВАНИЕ
+    onDeleteSlot: (day: Day, slotId: number) => void;
     onAddSlot: (day: Day) => void;
     onDeleteDaySlots: (day: Day) => void;
     isOwner: boolean;
 }) {
-    const getHeight = (slotsCount: number) => {
-        switch (slotsCount) {
-            case 0: return 'h-[50px]';
-            case 1: return 'h-[75px]';
-            case 2: return 'h-[116px]';
-            case 3: return 'h-[157px]';
-            default: return 'h-[50px]';
-        }
-    };
     const slots = day.slots || [];
     const slotsCount = slots.length;
+    
+    // Динамический расчет минимальной высоты
+    const getMinHeight = (count: number) => {
+        if (count === 0) return 'min-h-[50px]';
+        // 33px (отступ сверху) + количество слотов * (35px высота + 6px промежуток) + 10px отступ снизу
+        const calculatedHeight = 33 + (count * 41) + 10;
+        return `min-h-[${calculatedHeight}px]`;
+    };
+
     return (
-        <div className={`w-full ${getHeight(slotsCount)} relative transition-all duration-300`}>
+        <div className={`w-full ${getMinHeight(slotsCount)} relative transition-all duration-300 border-b border-gray-800 last:border-b-0`}>
             <p className={clsx("absolute top-0 left-[9px] text-[14px] font-normal font-sans leading-normal transition-colors", { "text-[#FDF277] font-semibold": day.isToday, "text-white": !day.isToday })}>
                 {day.formattedDate}
             </p>
@@ -92,7 +92,7 @@ function DayRow({
                             slot={slot}
                             day={day}
                             onTakeSlot={onTakeSlot}
-                            onDeleteSlot={onDeleteSlot} // <--- ИЗМЕНЕНО НАЗВАНИЕ
+                            onDeleteSlot={onDeleteSlot}
                             currentUserId={currentUserId}
                             isOwner={isOwner}
                         />
@@ -110,7 +110,7 @@ export default function Main({
     isLoading = false,
     currentUserId,
     onTakeSlot,
-    onDeleteSlot, // <--- ИЗМЕНЕНО НАЗВАНИЕ
+    onDeleteSlot,
     onAddSlot,
     onDeleteDaySlots,
     isOwner,
@@ -123,7 +123,17 @@ export default function Main({
     });
 
     if (isLoading) {
-        return (<main className="container mx-auto bg-black rounded-lg w-full animate-pulse"><div className="flex flex-col pt-2">{[...Array(7)].map((_, i) => (<div key={i} className="h-[50px] relative border-b border-gray-800 last:border-b-0"><div className="absolute top-1 left-2 h-4 bg-gray-700 rounded w-1/3"></div></div>))}</div></main>);
+        return (
+            <main className="container mx-auto bg-black rounded-lg w-full animate-pulse">
+                <div className="flex flex-col pt-2">
+                    {[...Array(7)].map((_, i) => (
+                        <div key={i} className="min-h-[50px] relative border-b border-gray-800 last:border-b-0">
+                            <div className="absolute top-1 left-2 h-4 bg-gray-700 rounded w-1/3"></div>
+                        </div>
+                    ))}
+                </div>
+            </main>
+        );
     }
 
     return (
@@ -136,7 +146,7 @@ export default function Main({
                             day={day}
                             currentUserId={currentUserId}
                             onTakeSlot={onTakeSlot}
-                            onDeleteSlot={onDeleteSlot} // <--- ИЗМЕНЕНО НАЗВАНИЕ
+                            onDeleteSlot={onDeleteSlot}
                             onAddSlot={onAddSlot}
                             onDeleteDaySlots={onDeleteDaySlots}
                             isOwner={isOwner}

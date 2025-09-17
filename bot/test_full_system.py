@@ -307,7 +307,7 @@ async def test_shift_operations(api_keys: Dict[str, str]):
                     results.add_fail(f"Ошибка удаления слотов: {resp.status}")
     except Exception as e:
                 print(f"{RED}✗ Ошибка при удалении слотов: {e}{RESET}")
-        results.add_fail(f"Ошибка удаления слотов: {str(e)}")
+                results.add_fail(f"Ошибка удаления слотов: {str(e)}")
 
 
 async def test_bot_integration(api_keys: Dict[str, str]):

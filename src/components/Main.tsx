@@ -41,16 +41,18 @@ function DayRow({
     const slots = day.slots || [];
     const slotsCount = slots.length;
     
-    // Динамический расчет минимальной высоты
-    const getMinHeight = (count: number) => {
-        if (count === 0) return 'min-h-[50px]';
+    // Рассчитываем высоту динамически
+    const calculateHeight = (count: number) => {
+        if (count === 0) return 50;
         // 33px (отступ сверху) + количество слотов * (35px высота + 6px промежуток) + 10px отступ снизу
-        const calculatedHeight = 33 + (count * 41) + 10;
-        return `min-h-[${calculatedHeight}px]`;
+        return 33 + (count * 41) + 10;
     };
 
     return (
-        <div className={`w-full ${getMinHeight(slotsCount)} relative transition-all duration-300 border-b border-gray-800 last:border-b-0`}>
+        <div 
+            className="w-full relative transition-all duration-300 border-b border-gray-800 last:border-b-0"
+            style={{ minHeight: `${calculateHeight(slotsCount)}px` }}
+        >
             <p className={clsx("absolute top-0 left-[9px] text-[14px] font-normal font-sans leading-normal transition-colors", { "text-[#FDF277] font-semibold": day.isToday, "text-white": !day.isToday })}>
                 {day.formattedDate}
             </p>
@@ -127,7 +129,7 @@ export default function Main({
             <main className="container mx-auto bg-black rounded-lg w-full animate-pulse">
                 <div className="flex flex-col pt-2">
                     {[...Array(7)].map((_, i) => (
-                        <div key={i} className="min-h-[50px] relative border-b border-gray-800 last:border-b-0">
+                        <div key={i} className="relative border-b border-gray-800 last:border-b-0" style={{ minHeight: '50px' }}>
                             <div className="absolute top-1 left-2 h-4 bg-gray-700 rounded w-1/3"></div>
                         </div>
                     ))}

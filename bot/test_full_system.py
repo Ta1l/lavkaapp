@@ -304,9 +304,9 @@ async def test_shift_operations(api_keys: Dict[str, str]):
                     results.add_pass()
                 else:
                     print(f"{RED}✗ Ошибка удаления слотов: {resp.status}{RESET}")
-                                        results.add_fail(f"Ошибка удаления слотов: {resp.status}")
+                    results.add_fail(f"Ошибка удаления слотов: {resp.status}")
     except Exception as e:
-        print(f"{RED}✗ Ошибка при удалении слотов: {e}{RESET}")
+                print(f"{RED}✗ Ошибка при удалении слотов: {e}{RESET}")
         results.add_fail(f"Ошибка удаления слотов: {str(e)}")
 
 
@@ -591,3 +591,113 @@ async def run_all_tests():
         print("1. Покажите регистрацию на сайте")
         print("2. Продемонстрируйте вход в бота")
         print("3. Загрузите тестовые скриншоты")
+        print("4. Покажите распознавание слотов")
+                print("5. Продемонстрируйте загрузку слотов на сайт")
+        print("6. Покажите слоты на веб-интерфейсе")
+        print("7. Продемонстрируйте конфликт слотов (опционально)")
+    else:
+        print(f"{RED}⚠️ ВНИМАНИЕ: Есть проблемы, которые нужно исправить!{RESET}")
+        print("\nКритические проблемы для исправления:")
+        for error in results.errors[:5]:  # Показываем первые 5 ошибок
+            print(f"  - {error}")
+            
+    # Дополнительные рекомендации
+    print(f"\n{BLUE}ПОДГОТОВКА К ДЕМОНСТРАЦИИ:{RESET}")
+    print("1. Подготовьте тестовые скриншоты со слотами")
+    print("2. Убедитесь, что бот запущен: python bot.py")
+    print("3. Проверьте, что сайт доступен: " + WEBAPP_URL)
+    print("4. Создайте тестового пользователя для демо")
+    print("5. Очистите старые тестовые данные")
+    
+    # Контрольный чек-лист
+    print(f"\n{BLUE}ЧЕК-ЛИСТ ПЕРЕД ПОКАЗОМ:{RESET}")
+    checklist = [
+        ("Сервер доступен", results.passed > 0),
+        ("API работает", "api_keys" in locals() and len(api_keys) > 0),
+        ("Бот активен", any("Бот активен" in str(e) for e in results.errors) == False),
+        ("Слоты добавляются", any("добавления слота" in str(e) for e in results.errors) == False),
+        ("Безопасность настроена", any("безопасности" in str(e) for e in results.errors) == False),
+    ]
+    
+    for item, status in checklist:
+        if status:
+            print(f"  {GREEN}✓ {item}{RESET}")
+        else:
+            print(f"  {RED}✗ {item}{RESET}")
+
+
+async def quick_health_check():
+    """Быстрая проверка здоровья системы"""
+    print(f"\n{BLUE}БЫСТРАЯ ПРОВЕРКА:{RESET}")
+    
+    checks = {
+        "Веб-сайт": f"{WEBAPP_URL}/",
+        "API": f"{WEBAPP_URL}/api/health",
+        "Telegram бот": f"https://api.telegram.org/bot{BOT_TOKEN}/getMe"
+    }
+    
+    all_ok = True
+    async with aiohttp.ClientSession() as session:
+        for name, url in checks.items():
+            try:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=5)) as resp:
+                    if resp.status == 200:
+                        print(f"  {GREEN}✓ {name}{RESET}")
+                    else:
+                        print(f"  {RED}✗ {name} (статус {resp.status}){RESET}")
+                        all_ok = False
+            except Exception:
+                print(f"  {RED}✗ {name} (недоступен){RESET}")
+                all_ok = False
+    
+    return all_ok
+
+
+async def main():
+    """Главная функция"""
+    # Проверка аргументов командной строки
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "--quick":
+            # Быстрая проверка
+            all_ok = await quick_health_check()
+            if all_ok:
+                print(f"\n{GREEN}✅ Все системы работают!{RESET}")
+                sys.exit(0)
+            else:
+                print(f"\n{RED}❌ Есть проблемы с системой!{RESET}")
+                sys.exit(1)
+        elif sys.argv[1] == "--help":
+            print("Использование:")
+            print("  python test_full_system.py         - Полное тестирование")
+            print("  python test_full_system.py --quick - Быстрая проверка")
+            print("  python test_full_system.py --help  - Эта справка")
+            sys.exit(0)
+    
+    # Полное тестирование
+    await run_all_tests()
+
+
+if __name__ == "__main__":
+    # Проверка версии Python
+    if sys.version_info < (3, 7):
+        print(f"{RED}❌ Требуется Python 3.7 или выше{RESET}")
+        sys.exit(1)
+    
+    # Проверка переменных окружения
+    if not WEBAPP_URL:
+        print(f"{RED}❌ Не задана переменная WEBAPP_URL{RESET}")
+        sys.exit(1)
+        
+    if not BOT_TOKEN:
+        print(f"{RED}❌ Не задан BOT_TOKEN{RESET}")
+        sys.exit(1)
+    
+    # Запуск тестов
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print(f"\n{YELLOW}⚠️ Тестирование прервано пользователем{RESET}")
+        sys.exit(1)
+    except Exception as e:
+        print(f"\n{RED}❌ Критическая ошибка: {e}{RESET}")
+        sys.exit(1)

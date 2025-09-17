@@ -28,7 +28,7 @@ export default function SchedulePage({ params, searchParams }: Props) {
         const key = await autoLogin();
         if (key) {
           setApiKey(key);
-          console.log("✅ Авторизация через Telegram успешна:", key);
+          console.log("✅ Авторизация через Telegram успешна");
 
           // Загружаем текущего пользователя
           const res = await fetch("/api/auth/me", {
@@ -37,6 +37,7 @@ export default function SchedulePage({ params, searchParams }: Props) {
           if (res.ok) {
             const user = await res.json();
             setCurrentUser(user);
+            console.log("✅ Текущий пользователь:", user);
           }
 
           // Загружаем расписание
@@ -125,7 +126,7 @@ export default function SchedulePage({ params, searchParams }: Props) {
 
   if (loading) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-black">
         <div className="text-white">⏳ Загрузка...</div>
       </div>
     );
@@ -133,7 +134,7 @@ export default function SchedulePage({ params, searchParams }: Props) {
 
   if (!apiKey) {
     return (
-      <div className="flex min-h-screen items-center justify-center">
+      <div className="flex min-h-screen items-center justify-center bg-black">
         <div className="text-white">🔑 Пожалуйста, войдите через логин/пароль</div>
       </div>
     );
@@ -143,12 +144,15 @@ export default function SchedulePage({ params, searchParams }: Props) {
     !!currentUser &&
     (!viewedUserId || Number(viewedUserId) === currentUser.id);
 
+  console.log("isOwner:", isOwner, "currentUser:", currentUser?.id, "viewedUserId:", viewedUserId);
+
   return (
     <ScheduleClientComponent
       initialWeekDays={weekDays}
       initialOffset={offset}
       currentUser={currentUser}
       isOwner={isOwner}
+      apiKey={apiKey} // Передаем apiKey
     />
   );
 }

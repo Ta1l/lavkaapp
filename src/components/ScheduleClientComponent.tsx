@@ -1,4 +1,3 @@
-// src/components/ScheduleClientComponent.tsx
 'use client';
 
 import React, { useState, useEffect, useRef } from 'react';
@@ -16,6 +15,7 @@ type Props = {
   initialOffset: number;
   currentUser: User | null;
   isOwner: boolean;
+  apiKey: string; // Добавляем apiKey
 };
 
 function getErrorMessage(error: unknown): string {
@@ -24,7 +24,13 @@ function getErrorMessage(error: unknown): string {
     return 'Произошла неизвестная ошибка.';
 }
 
-export default function ScheduleClientComponent({ initialWeekDays, initialOffset, currentUser, isOwner }: Props) {
+export default function ScheduleClientComponent({ 
+  initialWeekDays, 
+  initialOffset, 
+  currentUser, 
+  isOwner,
+  apiKey // Получаем apiKey
+}: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [weekDays, setWeekDays] = useState<Day[]>(initialWeekDays);
@@ -60,8 +66,12 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
   };
 
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { method: 'POST' });
-    window.location.href = '/';
+    await fetch('/api/auth/logout', { 
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` }
+    });
+    localStorage.removeItem('apiKey');
+    window.location.href = '/auth';
   };
 
   const refreshData = () => {
@@ -70,6 +80,7 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
   };
 
   const handleAddSlot = (day: Day) => {
+    console.log('handleAddSlot called for day:', day.formattedDate);
     setSelectedDay(day);
     setIsModalOpen(true);
   };
@@ -78,22 +89,36 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
     if (!selectedDay) return;
     setLoading(true);
     try {
+      const dateStr = format(selectedDay.date, 'yyyy-MM-dd');
+      console.log('Creating slot:', { date: dateStr, startTime, endTime });
+      
       const res = await fetch('/api/shifts', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
         body: JSON.stringify({ 
-          date: selectedDay.date.toISOString(), 
+          date: dateStr, 
           startTime, 
           endTime,
           assignToSelf: isOwner
         }),
       });
-      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось создать слот');
+      
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.error || 'Не удалось создать слот');
+      }
+      
       refreshData();
     } catch (err) {
-      alert(getErrorMessage(err)); setLoading(false);
+      console.error('Error creating slot:', err);
+      alert(getErrorMessage(err)); 
+      setLoading(false);
     } finally {
-      setIsModalOpen(false); setSelectedDay(null);
+      setIsModalOpen(false); 
+      setSelectedDay(null);
     }
   };
 
@@ -102,26 +127,28 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
     try {
       const res = await fetch('/api/slots', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
           body: JSON.stringify({ slotId: slot.id })
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось занять слот');
       refreshData();
     } catch (err) {
-      alert(getErrorMessage(err)); setLoading(false);
+      alert(getErrorMessage(err)); 
+      setLoading(false);
     }
   };
   
-  // --- НАЧАЛО ИЗМЕНЕНИЙ ---
-  // Функция переименована и теперь включает подтверждение
   const handleDeleteSlot = async (day: Day, slotId: number) => {
     if (!confirm(`Вы уверены, что хотите навсегда удалить этот слот?`)) return;
 
     setLoading(true);
     try {
-      // Добавляем { cache: 'no-store' } чтобы избежать проблем с кэшированием
       const res = await fetch(`/api/slots?id=${slotId}`, { 
         method: 'DELETE',
+        headers: { Authorization: `Bearer ${apiKey}` },
         cache: 'no-store' 
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось удалить слот');
@@ -131,7 +158,6 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
       setLoading(false);
     }
   };
-  // --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
   const handleDeleteDaySlots = async (day: Day) => {
     const confirmationText = `Вы уверены, что хотите очистить день ${day.formattedDate}?\n\nБудут удалены все свободные слоты, а ваши занятые слоты станут свободными.`;
@@ -139,15 +165,17 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
 
     setLoading(true);
     try {
-      const dateStr = format(day.date, 'yyyy-dd-MM');
+      const dateStr = format(day.date, 'yyyy-MM-dd');
       const res = await fetch(`/api/shifts?date=${dateStr}`, { 
         method: 'DELETE',
+        headers: { Authorization: `Bearer ${apiKey}` },
         cache: 'no-store'
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось очистить день');
       refreshData();
     } catch (err) {
-      alert(getErrorMessage(err)); setLoading(false);
+      alert(getErrorMessage(err)); 
+      setLoading(false);
     }
   };
 
@@ -156,34 +184,46 @@ export default function ScheduleClientComponent({ initialWeekDays, initialOffset
     ? `${format(mainWeek[0].date, 'd MMM')} - ${format(mainWeek[6].date, 'd MMM')}`
     : `${format(nextWeek[0].date, 'd MMM')} - ${format(nextWeek[6].date, 'd MMM')}`;
 
+  console.log('ScheduleClientComponent - isOwner:', isOwner);
+
   return (
     <>
       <div className="flex flex-col min-h-screen bg-black text-white pb-[70px] pt-[100px]">
         <Header 
           dateRange={dateRange}
-          onPrevWeek={() => navigate(0)} onNextWeek={() => navigate(1)}
-          isPrevDisabled={offset === 0 || loading} isNextDisabled={offset === 1 || loading}
+          onPrevWeek={() => navigate(0)} 
+          onNextWeek={() => navigate(1)}
+          isPrevDisabled={offset === 0 || loading} 
+          isNextDisabled={offset === 1 || loading}
           onLogout={handleLogout}
         />
         <Main
           weekDays={weekDays}
-          onPrevWeek={() => navigate(0)} onNextWeek={() => navigate(1)}
+          onPrevWeek={() => navigate(0)} 
+          onNextWeek={() => navigate(1)}
           isLoading={loading}
           currentUserId={currentUser?.id || null}
           isOwner={isOwner}
           onAddSlot={handleAddSlot}
           onTakeSlot={handleTakeSlot}
-          onDeleteSlot={handleDeleteSlot} // <--- ИЗМЕНЕНО НАЗВАНИЕ
+          onDeleteSlot={handleDeleteSlot}
           onDeleteDaySlots={handleDeleteDaySlots}
         />
         <Lower 
             isOwner={isOwner}
-            onAddSlotClick={() => handleAddSlot(weekDays.find(d => d.isToday) || weekDays[0])}
+            onAddSlotClick={() => {
+              const todayDay = weekDays.find(d => d.isToday) || weekDays[0];
+              console.log('Lower button clicked, adding slot for:', todayDay?.formattedDate);
+              handleAddSlot(todayDay);
+            }}
         />
       </div>
-      {isModalOpen && (
+      {isModalOpen && selectedDay && (
         <AddSlotModal
-          onClose={() => setIsModalOpen(false)}
+          onClose={() => {
+            setIsModalOpen(false);
+            setSelectedDay(null);
+          }}
           onDone={handleModalDone}
         />
       )}

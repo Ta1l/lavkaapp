@@ -116,19 +116,26 @@ async def add_shift(api_key: str, date: str, start: str, end: str) -> bool:
         "assignToSelf": True
     }
     
+    url = f"{WEBAPP_URL}/api/shifts"
+    logger.info(f"Sending shift to: {url}")
+    
     try:
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                f"{WEBAPP_URL}/api/shifts",
+                url,
                 headers=headers,
                 json=payload,
                 timeout=aiohttp.ClientTimeout(total=30)
             ) as resp:
+                text = await resp.text()
+                
                 if resp.status in (200, 201):
-                    logger.info(f"Successfully added shift: {date} {start}-{end}")
+                    logger.info(f"✅ Successfully added shift: {date} {start}-{end}")
                     return True
+                elif resp.status == 409:
+                    logger.warning(f"⚠️ Shift already taken by another user: {date} {start}-{end}")
+                    return False
                 else:
-                    text = await resp.text()
                     logger.warning(f"Failed to add shift: {resp.status} - {text[:200]}")
                     return False
     except Exception as e:

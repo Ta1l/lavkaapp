@@ -6,7 +6,6 @@ import { pool } from '@/lib/db';
 import { format } from 'date-fns';
 import { User } from '@/types/shifts';
 
-// --- НАЧАЛО ИЗМЕНЕНИЙ ---
 /**
  * Универсальная функция для аутентификации пользователя.
  * Сначала проверяет API-ключ в заголовке, затем - сессионный cookie.
@@ -36,7 +35,6 @@ async function getUserFromRequest(request: NextRequest): Promise<User | null> {
         return null;
     }
 }
-// --- КОНЕЦ ИЗМЕНЕНИЙ ---
 
 function normalizeDateString(d: string | Date): string | null {
   try {
@@ -71,7 +69,6 @@ export async function GET(request: NextRequest) {
     const startStr = startParam ? normalizeDateString(startParam) : null;
     const endStr = endParam ? normalizeDateString(endParam) : null;
 
-    // --- ИЗМЕНЕНИЕ: Используем новую функцию аутентификации ---
     const currentUser = await getUserFromRequest(request);
 
     let query = `
@@ -130,7 +127,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     console.log('[POST /api/shifts] Body:', body);
     
-    // --- ИЗМЕНЕНИЕ: Используем новую функцию аутентификации ---
+    // Используем функцию аутентификации
     const currentUser = await getUserFromRequest(request);
     console.log('[POST /api/shifts] Current user:', currentUser);
 
@@ -156,17 +153,54 @@ export async function POST(request: NextRequest) {
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+      
+      // Проверяем существующий слот
       const existing = await client.query(
         'SELECT * FROM shifts WHERE shift_date = $1 AND shift_code = $2',
         [dateStr, shiftCode]
       );
 
       if ((existing.rowCount ?? 0) > 0) {
-        await client.query('COMMIT');
-        console.log('[POST /api/shifts] Shift already exists:', existing.rows[0]);
-        return NextResponse.json(existing.rows[0]);
+        const existingShift = existing.rows[0];
+        console.log('[POST /api/shifts] Shift already exists:', existingShift);
+        
+        // НОВАЯ ЛОГИКА: Проверяем владельца слота
+        if (existingShift.user_id && existingShift.user_id !== currentUser.id) {
+          // Слот занят другим пользователем - возвращаем ошибку
+          await client.query('COMMIT');
+          console.log('[POST /api/shifts] Conflict: shift taken by user', existingShift.user_id);
+          return NextResponse.json({ 
+            error: 'Shift already taken by another user',
+            conflict: true,
+            existingUserId: existingShift.user_id,
+            currentUserId: currentUser.id
+          }, { status: 409 }); // 409 Conflict
+          
+        } else if (existingShift.user_id === currentUser.id) {
+          // Слот уже принадлежит текущему пользователю - это нормально
+          await client.query('COMMIT');
+          console.log('[POST /api/shifts] Shift already belongs to current user');
+          return NextResponse.json(existingShift, { status: 200 });
+          
+        } else if (!existingShift.user_id && assignToSelf) {
+          // Слот свободен и пользователь хочет его взять - обновляем
+          const update = await client.query(
+            'UPDATE shifts SET user_id = $1, status = $2, updated_at = NOW() WHERE id = $3 RETURNING *',
+            [currentUser.id, 'pending', existingShift.id]
+          );
+          await client.query('COMMIT');
+          console.log('[POST /api/shifts] Assigned existing free shift to user:', update.rows[0]);
+          return NextResponse.json(update.rows[0], { status: 200 });
+          
+        } else {
+          // Слот свободен, но пользователь не хочет его брать
+          await client.query('COMMIT');
+          console.log('[POST /api/shifts] Returning existing free shift');
+          return NextResponse.json(existingShift, { status: 200 });
+        }
       }
       
+      // Слот не существует - создаем новый
       const userId = assignToSelf ? currentUser.id : null;
       const status = assignToSelf ? 'pending' : 'available';
       const insert = await client.query(
@@ -177,7 +211,7 @@ export async function POST(request: NextRequest) {
       );
       await client.query('COMMIT');
       
-      console.log('[POST /api/shifts] Shift created:', insert.rows[0]);
+      console.log('[POST /api/shifts] New shift created:', insert.rows[0]);
       return NextResponse.json(insert.rows[0], { status: 201 });
 
     } catch (err) {
@@ -193,7 +227,6 @@ export async function POST(request: NextRequest) {
 }
 
 export async function DELETE(request: NextRequest) {
-  // --- ИЗМЕНЕНИЕ: Используем новую функцию аутентификации ---
   const currentUser = await getUserFromRequest(request);
   if (!currentUser) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -216,14 +249,15 @@ export async function DELETE(request: NextRequest) {
     
     console.log(`[API Shifts DELETE] User ${currentUser.id} starting to clear day ${dateStr}`);
 
-    // Шаг 1: Освобождаем все слоты, занятые ТЕКУЩИМ пользователем в этот день.
+    // Шаг 1: Освобождаем все слоты, занятые ТЕКУЩИМ пользователем в этот день
     const releaseResult = await client.query(
-      `UPDATE shifts SET user_id = NULL, status = 'available' WHERE shift_date = $1 AND user_id = $2`,
+      `UPDATE shifts SET user_id = NULL, status = 'available', updated_at = NOW() 
+       WHERE shift_date = $1 AND user_id = $2`,
       [dateStr, currentUser.id]
     );
     console.log(`[API Shifts DELETE] Released ${releaseResult.rowCount} slots taken by user ${currentUser.id}.`);
 
-    // Шаг 2: Удаляем все СВОБОДНЫЕ слоты в этот день.
+    // Шаг 2: Удаляем все СВОБОДНЫЕ слоты в этот день
     const deleteResult = await client.query(
       `DELETE FROM shifts WHERE shift_date = $1 AND user_id IS NULL`,
       [dateStr]

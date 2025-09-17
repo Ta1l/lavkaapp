@@ -9,13 +9,13 @@ export default function AuthPage() {
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const tg = (window as any).Telegram?.WebApp;
-
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>, action: "login" | "register") {
     e.preventDefault();
     setError(null);
 
     try {
+      // Получаем Telegram WebApp только в браузере
+      const tg = typeof window !== 'undefined' ? (window as any).Telegram?.WebApp : null;
       const telegramId = tg?.initDataUnsafe?.user?.id;
 
       // отправляем данные на сервер
@@ -23,7 +23,7 @@ export default function AuthPage() {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(telegramId ? { "x-telegram-id": telegramId } : {}),
+          ...(telegramId ? { "x-telegram-id": String(telegramId) } : {}),
         },
         body: JSON.stringify({ username, password, action }),
       });
@@ -38,7 +38,7 @@ export default function AuthPage() {
       if (data.apiKey) {
         localStorage.setItem("apiKey", data.apiKey);
         console.log("✅ Авторизация успешна, apiKey сохранён");
-        router.push("/schedule/0"); // переход к расписанию
+        router.push("/schedule/0");
       }
     } catch (err) {
       console.error("Ошибка при авторизации:", err);

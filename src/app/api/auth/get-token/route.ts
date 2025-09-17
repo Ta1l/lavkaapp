@@ -6,7 +6,7 @@ import bcrypt from "bcrypt";
 import crypto from "crypto";
 
 /**
- * GET — запретим
+ * GET — запрещён
  */
 export async function GET() {
   return NextResponse.json(
@@ -25,6 +25,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { username, password } = body;
 
+    // Телеграм ID передаём через заголовок
     const telegramIdHeader = request.headers.get("x-telegram-id");
     console.log("[API Get-Token] Telegram ID header:", telegramIdHeader);
 
@@ -35,7 +36,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // 1. Ищем пользователя по username
+    // 1. Ищем пользователя
     const result = await pool.query(
       "SELECT id, username, password, api_key, telegram_id FROM users WHERE username = $1",
       [username]
@@ -52,7 +53,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid credentials" }, { status: 401 });
     }
 
-    // 3. Генерируем apiKey при необходимости
+    // 3. Генерируем apiKey, если его нет
     let apiKey = user.api_key;
     if (!apiKey) {
       apiKey = crypto.randomBytes(32).toString("hex");
@@ -63,14 +64,16 @@ export async function POST(request: NextRequest) {
       console.log(`[API Get-Token] Generated new API key for ${user.username}`);
     }
 
-    // 4. Если пришёл Telegram ID — сохраняем связь
-    if (telegramIdHeader) {
+    // 4. Если пришёл Telegram ID — привязываем, но только если у юзера ещё нет
+    if (telegramIdHeader && !user.telegram_id) {
       const telegramId = BigInt(telegramIdHeader);
       await pool.query("UPDATE users SET telegram_id = $1 WHERE id = $2", [
         telegramId,
         user.id,
       ]);
-      console.log(`[API Get-Token] Linked Telegram ID ${telegramId} with user ${user.username}`);
+      console.log(
+        `[API Get-Token] Linked Telegram ID ${telegramId} with user ${user.username}`
+      );
     }
 
     return NextResponse.json({ apiKey }, { status: 200 });
@@ -89,7 +92,8 @@ export async function OPTIONS() {
     headers: {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, x-telegram-id",
+      "Access-Control-Allow-Headers":
+        "Content-Type, x-telegram-id",
     },
   });
 }

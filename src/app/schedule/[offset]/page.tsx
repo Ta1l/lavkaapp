@@ -16,7 +16,6 @@ interface Props {
 
 export default function SchedulePage({ params, searchParams }: Props) {
   const offset = Number(params.offset ?? 0);
-  // ИСПРАВЛЕНО: Преобразуем userId в число сразу, чтобы избежать путаницы
   const viewedUserId = searchParams?.userId ? Number(searchParams.userId) : null;
 
   const [apiKey, setApiKey] = useState<string | null>(null);
@@ -39,10 +38,8 @@ export default function SchedulePage({ params, searchParams }: Props) {
             const user = await res.json();
             setCurrentUser(user);
             console.log("✅ Текущий пользователь:", user);
-            // Загружаем расписание после получения данных о пользователе
             await loadSchedule(key, user); 
           } else {
-            // Если не удалось получить пользователя, все равно пробуем загрузить общее расписание
             await loadSchedule(key, null);
           }
         } else {
@@ -56,7 +53,7 @@ export default function SchedulePage({ params, searchParams }: Props) {
     }
 
     init();
-  }, [offset, viewedUserId]); // Зависимость от viewedUserId корректна
+  }, [offset, viewedUserId]);
 
   async function loadSchedule(key: string, user: User | null) {
     try {
@@ -71,21 +68,22 @@ export default function SchedulePage({ params, searchParams }: Props) {
 
       const params: Record<string, string> = { start: startDate, end: endDate };
       
-      // Определяем, чей userId использовать для запроса
-      const userIdForQuery = user?.isOwner ? viewedUserId : user?.id;
-      if (userIdForQuery) {
-        params.userId = String(userIdForQuery);
+      // Если есть viewedUserId, используем его для запроса
+      if (viewedUserId) {
+        params.userId = String(viewedUserId);
+        console.log("👀 Загружаем расписание для пользователя:", viewedUserId);
       }
 
       const qs = new URLSearchParams(params).toString();
       const url = `/api/shifts?${qs}`;
+      console.log("📡 Запрос расписания:", url);
 
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${key}` },
       });
       if (!res.ok) {
         console.error("Ошибка загрузки расписания");
-        setWeekDays(weekDaysTemplate.map(d => ({ ...d, slots: [] }))); // Показываем пустые дни при ошибке
+        setWeekDays(weekDaysTemplate.map(d => ({ ...d, slots: [] })));
         return;
       }
 
@@ -98,13 +96,14 @@ export default function SchedulePage({ params, searchParams }: Props) {
         username?: string | null;
       }> = await res.json();
 
+      console.log("📊 Загружено слотов:", rows.length);
+
       const days: Day[] = weekDaysTemplate.map((d) => ({
         ...d,
         slots: [],
       }));
       
       for (const r of rows) {
-        // Убираем время из даты для корректного сравнения
         const rowDateStr = r.shift_date.split('T')[0];
         const dayIndex = days.findIndex(
           (wd) => format(wd.date, "yyyy-MM-dd") === rowDateStr
@@ -143,7 +142,7 @@ export default function SchedulePage({ params, searchParams }: Props) {
     );
   }
 
-  if (!apiKey || !currentUser) {
+  if (!apiKey) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-black">
         <div className="text-white">🔑 Пожалуйста, войдите через логин/пароль</div>
@@ -151,9 +150,8 @@ export default function SchedulePage({ params, searchParams }: Props) {
     );
   }
 
-  // ИСПРАВЛЕНО: Логика определения владельца.
-  // Владелец - это тот, у кого есть флаг isOwner в профиле.
-  const isOwner = currentUser?.isOwner ?? false;
+  // Определяем, является ли текущий пользователь владельцем просматриваемого расписания
+  const isOwner = !!currentUser && (!viewedUserId || viewedUserId === currentUser.id);
 
   console.log("isOwner:", isOwner, "currentUser:", currentUser?.id, "viewedUserId:", viewedUserId);
   
@@ -164,7 +162,6 @@ export default function SchedulePage({ params, searchParams }: Props) {
       currentUser={currentUser}
       isOwner={isOwner}
       apiKey={apiKey}
-      // ИСПРАВЛЕНО: Передаем проп viewedUserId, который ожидает дочерний компонент
       viewedUserId={viewedUserId}
     />
   );

@@ -46,6 +46,7 @@ export default function ScheduleClientComponent({
   // Функция для загрузки расписания
   const loadSchedule = async () => {
     try {
+      console.log('🔄 Loading schedule...');
       const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
       const weekDaysTemplate = offset === 1 ? nextWeek : mainWeek;
 
@@ -55,18 +56,22 @@ export default function ScheduleClientComponent({
         "yyyy-MM-dd"
       );
 
+      console.log('📅 Date range:', startDate, 'to', endDate);
+
       const params: Record<string, string> = { start: startDate, end: endDate };
       const viewedUserId = searchParams.get('userId');
       if (viewedUserId) params.userId = viewedUserId;
 
       const qs = new URLSearchParams(params).toString();
+      const url = `/api/shifts?${qs}`;
+      console.log('🌐 Fetching:', url);
 
-      const res = await fetch(`/api/shifts?${qs}`, {
+      const res = await fetch(url, {
         headers: { Authorization: `Bearer ${apiKey}` },
       });
       
       if (!res.ok) {
-        console.error("Ошибка загрузки расписания");
+        console.error("❌ Ошибка загрузки расписания:", res.status);
         return;
       }
 
@@ -78,6 +83,9 @@ export default function ScheduleClientComponent({
         status: string;
         username?: string | null;
       }> = await res.json();
+      
+      console.log('📊 Loaded shifts:', rows.length, 'items');
+      console.log('📊 Shifts data:', rows);
 
       const days: Day[] = weekDaysTemplate.map((d) => ({
         ...d,
@@ -165,11 +173,25 @@ export default function ScheduleClientComponent({
   };
   
   const handleModalDone = async (startTime: string, endTime: string) => {
-    if (!selectedDay) return;
+    if (!selectedDay) {
+      console.log('❌ No selected day!');
+      return;
+    }
+    
     setLoading(true);
     try {
       const dateStr = format(selectedDay.date, 'yyyy-MM-dd');
-      console.log('Creating slot:', { date: dateStr, startTime, endTime });
+      const requestBody = { 
+        date: dateStr, 
+        startTime, 
+        endTime,
+        assignToSelf: isOwner
+      };
+      
+      console.log('📤 Creating slot with data:', requestBody);
+      console.log('🔑 API Key:', apiKey);
+      console.log('👤 isOwner:', isOwner);
+      console.log('📅 Selected day:', selectedDay);
       
       const res = await fetch('/api/shifts', {
         method: 'POST',
@@ -177,23 +199,32 @@ export default function ScheduleClientComponent({
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`
         },
-        body: JSON.stringify({ 
-          date: dateStr, 
-          startTime, 
-          endTime,
-          assignToSelf: isOwner
-        }),
+        body: JSON.stringify(requestBody),
       });
       
-      if (!res.ok) {
-        const errorData = await res.json();
-        throw new Error(errorData.error || 'Не удалось создать слот');
+      const responseText = await res.text();
+      console.log('📥 Response status:', res.status);
+      console.log('📥 Response text:', responseText);
+      
+      let responseData;
+      try {
+        responseData = JSON.parse(responseText);
+        console.log('📥 Response data:', responseData);
+      } catch (e) {
+        console.error('❌ Failed to parse response:', e);
+        throw new Error('Invalid response from server');
       }
       
-      // Обновляем данные напрямую
+      if (!res.ok) {
+        throw new Error(responseData.error || 'Не удалось создать слот');
+      }
+      
+      console.log('✅ Slot created successfully, refreshing data...');
       await refreshData();
+      console.log('✅ Data refreshed');
+      
     } catch (err) {
-      console.error('Error creating slot:', err);
+      console.error('❌ Error creating slot:', err);
       alert(getErrorMessage(err)); 
     } finally {
       setIsModalOpen(false); 

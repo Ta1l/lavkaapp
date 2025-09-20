@@ -17,7 +17,7 @@ type Props = {
   initialOffset: number;
   currentUser: User | null;
   isOwner: boolean;
-  apiKey: string; // Добавляем apiKey
+  apiKey: string;
 };
 
 function getErrorMessage(error: unknown): string {
@@ -31,7 +31,7 @@ export default function ScheduleClientComponent({
   initialOffset, 
   currentUser, 
   isOwner,
-  apiKey // Получаем apiKey
+  apiKey
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -43,17 +43,93 @@ export default function ScheduleClientComponent({
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
+  // Функция для загрузки расписания
+  const loadSchedule = async () => {
+    try {
+      const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
+      const weekDaysTemplate = offset === 1 ? nextWeek : mainWeek;
+
+      const startDate = format(weekDaysTemplate[0].date, "yyyy-MM-dd");
+      const endDate = format(
+        new Date(weekDaysTemplate[6].date.getTime() + 24 * 60 * 60 * 1000),
+        "yyyy-MM-dd"
+      );
+
+      const params: Record<string, string> = { start: startDate, end: endDate };
+      const viewedUserId = searchParams.get('userId');
+      if (viewedUserId) params.userId = viewedUserId;
+
+      const qs = new URLSearchParams(params).toString();
+
+      const res = await fetch(`/api/shifts?${qs}`, {
+        headers: { Authorization: `Bearer ${apiKey}` },
+      });
+      
+      if (!res.ok) {
+        console.error("Ошибка загрузки расписания");
+        return;
+      }
+
+      const rows: Array<{
+        id: number;
+        user_id: number | null;
+        shift_date: string;
+        shift_code: string;
+        status: string;
+        username?: string | null;
+      }> = await res.json();
+
+      const days: Day[] = weekDaysTemplate.map((d) => ({
+        ...d,
+        slots: [],
+      }));
+
+      for (const r of rows) {
+        const rowDateStr = String(r.shift_date);
+        const dayIndex = days.findIndex(
+          (wd) => format(wd.date, "yyyy-MM-dd") === rowDateStr
+        );
+        if (dayIndex === -1) continue;
+
+        const [startTime = "", endTime = ""] = r.shift_code?.split("-") ?? ["", ""];
+
+        const slot: TimeSlot = {
+          id: r.id,
+          startTime,
+          endTime,
+          status: r.status as any,
+          user_id: r.user_id,
+          userName: r.username ?? null,
+        };
+
+        days[dayIndex].slots.push(slot);
+      }
+
+      days.forEach((d) => {
+        d.slots.sort((a, b) => (a.startTime > b.startTime ? 1 : -1));
+      });
+
+      setWeekDays(days);
+    } catch (error) {
+      console.error("Ошибка загрузки расписания:", error);
+    }
+  };
+
   useEffect(() => {
-    const refreshData = () => { router.refresh(); };
+    const refreshData = async () => { 
+      await loadSchedule();
+    };
+    
     if (!isOwner) {
       pollingIntervalRef.current = setInterval(refreshData, 5000);
     }
+    
     return () => {
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
       }
     };
-  }, [isOwner, router]);
+  }, [isOwner, offset, apiKey]);
 
   useEffect(() => {
     setWeekDays(initialWeekDays);
@@ -76,9 +152,10 @@ export default function ScheduleClientComponent({
     window.location.href = '/auth';
   };
 
-  const refreshData = () => {
+  const refreshData = async () => {
     setLoading(true);
-    router.refresh();
+    await loadSchedule();
+    setLoading(false);
   };
 
   const handleAddSlot = (day: Day) => {
@@ -113,14 +190,15 @@ export default function ScheduleClientComponent({
         throw new Error(errorData.error || 'Не удалось создать слот');
       }
       
-      refreshData();
+      // Обновляем данные напрямую
+      await refreshData();
     } catch (err) {
       console.error('Error creating slot:', err);
       alert(getErrorMessage(err)); 
-      setLoading(false);
     } finally {
       setIsModalOpen(false); 
       setSelectedDay(null);
+      setLoading(false);
     }
   };
 
@@ -136,9 +214,10 @@ export default function ScheduleClientComponent({
           body: JSON.stringify({ slotId: slot.id })
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось занять слот');
-      refreshData();
+      await refreshData();
     } catch (err) {
       alert(getErrorMessage(err)); 
+    } finally {
       setLoading(false);
     }
   };
@@ -154,9 +233,10 @@ export default function ScheduleClientComponent({
         cache: 'no-store' 
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось удалить слот');
-      refreshData();
+      await refreshData();
     } catch (err) {
       alert(getErrorMessage(err));
+    } finally {
       setLoading(false);
     }
   };
@@ -174,9 +254,10 @@ export default function ScheduleClientComponent({
         cache: 'no-store'
       });
       if (!res.ok) throw new Error((await res.json()).error || 'Не удалось очистить день');
-      refreshData();
+      await refreshData();
     } catch (err) {
       alert(getErrorMessage(err)); 
+    } finally {
       setLoading(false);
     }
   };

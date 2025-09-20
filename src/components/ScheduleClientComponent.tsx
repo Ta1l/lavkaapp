@@ -92,12 +92,29 @@ export default function ScheduleClientComponent({
         slots: [],
       }));
 
+      // Добавим логирование для отладки
+      console.log('📅 Week days template:', weekDaysTemplate.map(d => ({
+        date: format(d.date, 'yyyy-MM-dd'),
+        formattedDate: d.formattedDate
+      })));
+
       for (const r of rows) {
-        const rowDateStr = String(r.shift_date);
+        const rowDateStr = String(r.shift_date).split('T')[0]; // Убираем время из даты
+        console.log('🔍 Processing shift:', {
+          id: r.id,
+          date: rowDateStr,
+          code: r.shift_code,
+          user_id: r.user_id
+        });
+        
         const dayIndex = days.findIndex(
           (wd) => format(wd.date, "yyyy-MM-dd") === rowDateStr
         );
-        if (dayIndex === -1) continue;
+        
+        if (dayIndex === -1) {
+          console.log('⚠️ Day not found for date:', rowDateStr);
+          continue;
+        }
 
         const [startTime = "", endTime = ""] = r.shift_code?.split("-") ?? ["", ""];
 
@@ -111,15 +128,22 @@ export default function ScheduleClientComponent({
         };
 
         days[dayIndex].slots.push(slot);
+        console.log('✅ Added slot to day:', dayIndex, days[dayIndex].formattedDate);
       }
 
       days.forEach((d) => {
         d.slots.sort((a, b) => (a.startTime > b.startTime ? 1 : -1));
       });
 
+      console.log('📊 Final days with slots:', days.map(d => ({
+        date: format(d.date, 'yyyy-MM-dd'),
+        formattedDate: d.formattedDate,
+        slotsCount: d.slots.length
+      })));
+
       setWeekDays(days);
     } catch (error) {
-      console.error("Ошибка загрузки расписания:", error);
+      console.error("❌ Ошибка загрузки расписания:", error);
     }
   };
 

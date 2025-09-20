@@ -1,4 +1,4 @@
-// src/app/schedule/[offset]
+// src/app/schedule/[offset]/page.tsx
 
 "use client";
 
@@ -16,7 +16,8 @@ interface Props {
 
 export default function SchedulePage({ params, searchParams }: Props) {
   const offset = Number(params.offset ?? 0);
-  const viewedUserId = searchParams?.userId ?? null;
+  // ИСПРАВЛЕНО: Преобразуем userId в число сразу, чтобы избежать путаницы
+  const viewedUserId = searchParams?.userId ? Number(searchParams.userId) : null;
 
   const [apiKey, setApiKey] = useState<string | null>(null);
   const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -26,13 +27,11 @@ export default function SchedulePage({ params, searchParams }: Props) {
   useEffect(() => {
     async function init() {
       try {
-        // Пытаемся автоматически авторизоваться через Telegram ID
         const key = await autoLogin();
         if (key) {
           setApiKey(key);
           console.log("✅ Авторизация через Telegram успешна");
 
-          // Загружаем текущего пользователя
           const res = await fetch("/api/auth/me", {
             headers: { Authorization: `Bearer ${key}` },
           });
@@ -40,10 +39,12 @@ export default function SchedulePage({ params, searchParams }: Props) {
             const user = await res.json();
             setCurrentUser(user);
             console.log("✅ Текущий пользователь:", user);
+            // Загружаем расписание после получения данных о пользователе
+            await loadSchedule(key, user); 
+          } else {
+            // Если не удалось получить пользователя, все равно пробуем загрузить общее расписание
+            await loadSchedule(key, null);
           }
-
-          // Загружаем расписание
-          await loadSchedule(key);
         } else {
           console.log("❌ Авто-логин не сработал, нужен ручной вход");
         }
@@ -55,9 +56,9 @@ export default function SchedulePage({ params, searchParams }: Props) {
     }
 
     init();
-  }, [offset, viewedUserId]);
+  }, [offset, viewedUserId]); // Зависимость от viewedUserId корректна
 
-  async function loadSchedule(key: string) {
+  async function loadSchedule(key: string, user: User | null) {
     try {
       const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
       const weekDaysTemplate = offset === 1 ? nextWeek : mainWeek;
@@ -69,15 +70,22 @@ export default function SchedulePage({ params, searchParams }: Props) {
       );
 
       const params: Record<string, string> = { start: startDate, end: endDate };
-      if (viewedUserId) params.userId = viewedUserId;
+      
+      // Определяем, чей userId использовать для запроса
+      const userIdForQuery = user?.isOwner ? viewedUserId : user?.id;
+      if (userIdForQuery) {
+        params.userId = String(userIdForQuery);
+      }
 
       const qs = new URLSearchParams(params).toString();
+      const url = `/api/shifts?${qs}`;
 
-      const res = await fetch(`/api/shifts?${qs}`, {
+      const res = await fetch(url, {
         headers: { Authorization: `Bearer ${key}` },
       });
       if (!res.ok) {
         console.error("Ошибка загрузки расписания");
+        setWeekDays(weekDaysTemplate.map(d => ({ ...d, slots: [] }))); // Показываем пустые дни при ошибке
         return;
       }
 
@@ -94,9 +102,10 @@ export default function SchedulePage({ params, searchParams }: Props) {
         ...d,
         slots: [],
       }));
-
+      
       for (const r of rows) {
-        const rowDateStr = String(r.shift_date);
+        // Убираем время из даты для корректного сравнения
+        const rowDateStr = r.shift_date.split('T')[0];
         const dayIndex = days.findIndex(
           (wd) => format(wd.date, "yyyy-MM-dd") === rowDateStr
         );
@@ -134,7 +143,7 @@ export default function SchedulePage({ params, searchParams }: Props) {
     );
   }
 
-  if (!apiKey) {
+  if (!apiKey || !currentUser) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-black">
         <div className="text-white">🔑 Пожалуйста, войдите через логин/пароль</div>
@@ -142,19 +151,21 @@ export default function SchedulePage({ params, searchParams }: Props) {
     );
   }
 
-  const isOwner =
-    !!currentUser &&
-    (!viewedUserId || Number(viewedUserId) === currentUser.id);
+  // ИСПРАВЛЕНО: Логика определения владельца.
+  // Владелец - это тот, у кого есть флаг isOwner в профиле.
+  const isOwner = currentUser?.isOwner ?? false;
 
   console.log("isOwner:", isOwner, "currentUser:", currentUser?.id, "viewedUserId:", viewedUserId);
-
+  
   return (
     <ScheduleClientComponent
       initialWeekDays={weekDays}
       initialOffset={offset}
       currentUser={currentUser}
       isOwner={isOwner}
-      apiKey={apiKey} // Передаем apiKey
+      apiKey={apiKey}
+      // ИСПРАВЛЕНО: Передаем проп viewedUserId, который ожидает дочерний компонент
+      viewedUserId={viewedUserId}
     />
   );
 }

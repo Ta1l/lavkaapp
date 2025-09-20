@@ -4,6 +4,21 @@
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
+// Добавляем декларацию типа
+declare global {
+  interface Window {
+    Telegram?: {
+      WebApp?: {
+        initDataUnsafe?: {
+          user?: {
+            id: number;
+          };
+        };
+      };
+    };
+  }
+}
+
 export default function HomePage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
@@ -65,7 +80,7 @@ export default function HomePage() {
             };
             
             // Добавляем Telegram ID если есть
-            if (window.Telegram?.WebApp?.initDataUnsafe?.user?.id) {
+            if (typeof window !== 'undefined' && window.Telegram?.WebApp?.initDataUnsafe?.user?.id) {
               headers["x-telegram-id"] = String(window.Telegram.WebApp.initDataUnsafe.user.id);
             }
 

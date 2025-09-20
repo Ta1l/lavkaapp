@@ -1,10 +1,11 @@
 // src/types/shifts.ts
-export type ShiftStatus = 'pending' | 'confirmed' | 'cancelled' | 'available';
+export type ShiftStatus = 'pending' | 'confirmed' | 'cancelled' | 'available' | 'taken';
 
 export interface User {
   id: number;
   username: string;
   full_name?: string;
+  isOwner: boolean; // <-- ИСПРАВЛЕНО: Добавлено это поле
 }
 
 export interface Shift {

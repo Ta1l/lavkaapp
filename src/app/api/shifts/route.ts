@@ -1,10 +1,10 @@
-// src/app/api/shifts/route.ts (ИСПРАВЛЕННАЯ И КОНЕЧНАЯ ВЕРСИЯ)
+// src/app/api/shifts/route.ts
 
 import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { pool } from '@/lib/db';
 import { format } from 'date-fns';
-import { User } from '@/types/shifts';
+import { User } from '@/types/shifts'; // Теперь импортируется правильный тип
 
 /**
  * Универсальная функция для аутентификации пользователя.
@@ -16,9 +16,10 @@ async function getUserFromRequest(request: NextRequest): Promise<User | null> {
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const apiKey = authHeader.substring(7);
         if (apiKey) {
-            const { rows } = await pool.query<User>('SELECT id, username, full_name FROM users WHERE api_key = $1', [apiKey]);
+            // Уточняем тип: из БД не приходит isOwner
+            const { rows } = await pool.query<Omit<User, 'isOwner'>>('SELECT id, username, full_name FROM users WHERE api_key = $1', [apiKey]);
             if (rows.length > 0) {
-                // Добавляем isOwner на основе id
+                // Теперь эта строка корректна, т.к. тип User содержит isOwner
                 return { ...rows[0], isOwner: rows[0].id === 1 };
             }
         }
@@ -29,7 +30,7 @@ async function getUserFromRequest(request: NextRequest): Promise<User | null> {
         if (!cookie) return null;
         const parsed = JSON.parse(cookie.value);
         if (parsed?.id) {
-            // Добавляем isOwner на основе id
+            // И эта строка теперь тоже корректна
             return { ...parsed, isOwner: parsed.id === 1 };
         }
         return null;
@@ -134,9 +135,7 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// ===================================================================
-// ГЛАВНОЕ ИСПРАВЛЕНИЕ ЗДЕСЬ
-// ===================================================================
+// POST-запросы остаются с нашими предыдущими исправлениями
 export async function POST(request: NextRequest) {
   console.log('[POST /api/shifts] ========== REQUEST START ==========');
   
@@ -151,7 +150,6 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    // ИСПРАВЛЕНИЕ 1: Проверяем, что только владелец (id=1) может создавать слоты
     if (!currentUser.isOwner) {
       return NextResponse.json({ error: 'Forbidden: Only the owner can create shifts.' }, { status: 403 });
     }
@@ -168,14 +166,10 @@ export async function POST(request: NextRequest) {
     
     const shiftCode = `${startTime}-${endTime}`;
     const userId = assignToSelf ? currentUser.id : null;
-    // Если слот создается для себя, он сразу занят. Если как свободный - доступен.
     const status = assignToSelf ? 'taken' : 'available'; 
     
     const client = await pool.connect();
     try {
-      // ИСПРАВЛЕНИЕ 2: УДАЛЕНА РУЧНАЯ ПРОВЕРКА. Мы просто пытаемся вставить данные.
-      // База данных сама не позволит создать дубликат для ОДНОГО И ТОГО ЖЕ пользователя.
-      
       const insertQuery = `
         INSERT INTO shifts (shift_date, day_of_week, shift_code, status, user_id)
         VALUES ($1, EXTRACT(ISODOW FROM $1::date), $2, $3, $4)
@@ -188,28 +182,24 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(result.rows[0], { status: 201 });
 
     } catch (err: any) {
-      // ИСПРАВЛЕНИЕ 3: ЛОВИМ ОШИБКУ ОТ БАЗЫ ДАННЫХ
-      // Если мы пытаемся создать дубликат для того же юзера, БД вернет ошибку 23505
       if (err.code === '23505' && err.constraint === 'shifts_user_date_code_unique') {
         console.warn('[POST /api/shifts] Attempted to create a duplicate shift for the same user.');
-        return NextResponse.json({ error: 'Этот слот для данного пользователя уже существует' }, { status: 409 }); // 409 Conflict
+        return NextResponse.json({ error: 'Этот слот для данного пользователя уже существует' }, { status: 409 });
       }
       
-      // Если другая ошибка, то это проблема сервера
       console.error('[POST /api/shifts] Database Error:', err);
-      throw err; // Передаем ошибку во внешний обработчик
+      throw err;
     } finally {
       client.release();
     }
   } catch (err) {
-    // Внешний обработчик ловит все остальные ошибки
     console.error('[POST /api/shifts] General Error:', err);
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
 
-// DELETE-запросы не меняем, они выглядят корректно
+// DELETE-запросы остаются с нашими предыдущими исправлениями
 export async function DELETE(request: NextRequest) {
   const currentUser = await getUserFromRequest(request);
   if (!currentUser) {
@@ -231,7 +221,6 @@ export async function DELETE(request: NextRequest) {
   try {
     await client.query('BEGIN');
     
-    // Важная логика: Владелец может удалять все слоты за день, обычный юзер - только свои
     let deleteResult;
     if (currentUser.isOwner) {
         console.log(`[API Shifts DELETE] Owner ${currentUser.id} clearing ALL shifts for ${dateStr}`);

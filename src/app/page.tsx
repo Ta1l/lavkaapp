@@ -1,111 +1,177 @@
 // src/app/page.tsx
-
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 
-export default function AuthPage() {
+export default function HomePage() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [isLogin, setIsLogin] = useState(true);
+  const [error, setError] = useState("");
+  const [isLoading, setIsLoading] = useState(false);
   const router = useRouter();
 
-  async function handleSubmit(e: React.FormEvent<HTMLFormElement>, action: "login" | "register") {
+  useEffect(() => {
+    // Проверяем параметры URL для отображения ошибок
+    const params = new URLSearchParams(window.location.search);
+    const errorParam = params.get('error');
+    
+    if (errorParam) {
+      switch(errorParam) {
+        case 'user_exists':
+          setError('Пользователь с таким именем уже существует');
+          break;
+        case 'invalid_credentials':
+          setError('Неверный логин или пароль');
+          break;
+        case 'validation_failed':
+          setError('Заполните все поля');
+          break;
+        default:
+          setError('Произошла ошибка');
+      }
+    }
+  }, []);
+
+  async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
-    setError(null);
+    setError("");
+    setIsLoading(true);
 
     try {
-      // Получаем Telegram WebApp только в браузере
-      const tg = typeof window !== 'undefined' ? (window as any).Telegram?.WebApp : null;
-      const telegramId = tg?.initDataUnsafe?.user?.id;
+      // Сохраняем логин и пароль для последующего получения токена
+      const savedUsername = username;
+      const savedPassword = password;
 
-      // отправляем данные на сервер
-      const res = await fetch("/api/auth/get-token", {
+      const formData = new FormData();
+      formData.append("username", username);
+      formData.append("password", password);
+      formData.append("action", isLogin ? "login" : "register");
+
+      const response = await fetch("/api/auth", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...(telegramId ? { "x-telegram-id": String(telegramId) } : {}),
-        },
-        body: JSON.stringify({ username, password, action }),
+        body: formData,
       });
 
-      const data = await res.json();
+      // Проверяем редирект
+      if (response.redirected) {
+        const url = new URL(response.url);
+        if (url.pathname === "/schedule/0") {
+          // Успешный вход/регистрация - теперь получаем API ключ
+          try {
+            const headers: HeadersInit = {
+              "Content-Type": "application/json"
+            };
+            
+            // Добавляем Telegram ID если есть
+            if (window.Telegram?.WebApp?.initDataUnsafe?.user?.id) {
+              headers["x-telegram-id"] = String(window.Telegram.WebApp.initDataUnsafe.user.id);
+            }
 
-      if (!res.ok) {
-        setError(data.error || "Ошибка входа");
-        return;
-      }
-
-      if (data.apiKey) {
-        localStorage.setItem("apiKey", data.apiKey);
-        console.log("✅ Авторизация успешна, apiKey сохранён");
-        router.push("/schedule/0");
+            const tokenRes = await fetch("/api/auth/get-token", {
+              method: "POST",
+              headers,
+              body: JSON.stringify({
+                username: savedUsername,
+                password: savedPassword
+              })
+            });
+            
+            if (tokenRes.ok) {
+              const data = await tokenRes.json();
+              if (data.apiKey) {
+                localStorage.setItem("apiKey", data.apiKey);
+                console.log("✅ API ключ сохранен");
+              }
+            } else {
+              console.error("Failed to get API token");
+            }
+          } catch (err) {
+            console.error("Error getting token:", err);
+          }
+          
+          // Переходим на страницу расписания
+          window.location.href = "/schedule/0";
+        } else {
+          // Ошибка - парсим параметры
+          const errorParam = url.searchParams.get('error');
+          if (errorParam === 'user_exists') {
+            setError('Пользователь с таким именем уже существует');
+          } else if (errorParam === 'invalid_credentials') {
+            setError('Неверный логин или пароль');
+          } else {
+            setError('Произошла ошибка');
+          }
+        }
       }
     } catch (err) {
-      console.error("Ошибка при авторизации:", err);
-      setError("Ошибка сервера");
+      console.error("Submit error:", err);
+      setError("Ошибка соединения с сервером");
+    } finally {
+      setIsLoading(false);
     }
   }
 
   return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-black p-8">
-      <div className="w-full max-w-sm rounded-lg bg-[#1C1C1C] p-8 shadow-lg">
-        <h1 className="mb-6 text-center text-3xl font-bold text-white">Лавка</h1>
-
-        <form className="space-y-6" onSubmit={(e) => handleSubmit(e, "login")}>
-          <div>
-            <label htmlFor="username" className="block text-sm font-medium text-gray-300">
-              Имя пользователя
-            </label>
-            <input
-              id="username"
-              name="username"
-              type="text"
-              required
-              autoComplete="username"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              className="mt-1 block w-full rounded-md bg-gray-800 text-white px-3 py-2 focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50"
-            />
-          </div>
-
-          <div>
-            <label htmlFor="password" className="block text-sm font-medium text-gray-300">
-              Пароль
-            </label>
-            <input
-              id="password"
-              name="password"
-              type="password"
-              required
-              autoComplete="current-password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              className="mt-1 block w-full rounded-md bg-gray-800 text-white px-3 py-2 focus:border-yellow-400 focus:ring focus:ring-yellow-300 focus:ring-opacity-50"
-            />
-          </div>
-
-          {error && <p className="text-red-500 text-sm">{error}</p>}
-
-          <div className="flex flex-col gap-4 pt-2">
-            <button
-              type="submit"
-              className="w-full rounded-md bg-yellow-400 px-4 py-2 text-sm font-medium text-black hover:bg-yellow-300 focus:outline-none focus:ring-2 focus:ring-yellow-500 focus:ring-offset-2 focus:ring-offset-gray-800"
-            >
-              Войти
-            </button>
-
-            <button
-              type="button"
-              onClick={(e) => handleSubmit(e as any, "register")}
-              className="w-full rounded-md bg-gray-700 px-4 py-2 text-sm font-medium text-white hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500 focus:ring-offset-2 focus:ring-offset-gray-800"
-            >
-              Зарегистрироваться
-            </button>
-          </div>
+    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+      <div className="w-full max-w-sm">
+        <h1 className="text-3xl font-bold text-white text-center mb-8">
+          SlotWorker
+        </h1>
+        
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <h2 className="text-xl font-semibold text-white text-center mb-4">
+            {isLogin ? "Вход" : "Регистрация"}
+          </h2>
+          
+          {error && (
+            <div className="bg-red-500/20 border border-red-500 text-red-500 p-3 rounded text-sm">
+              {error}
+            </div>
+          )}
+          
+          <input
+            type="text"
+            placeholder="Логин"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            className="w-full p-3 bg-gray-800 text-white rounded border border-gray-700 focus:border-yellow-400 focus:outline-none"
+            required
+            disabled={isLoading}
+          />
+          
+          <input
+            type="password"
+            placeholder="Пароль"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            className="w-full p-3 bg-gray-800 text-white rounded border border-gray-700 focus:border-yellow-400 focus:outline-none"
+            required
+            disabled={isLoading}
+          />
+          
+          <button
+            type="submit"
+            disabled={isLoading}
+            className="w-full p-3 bg-yellow-400 text-black font-semibold rounded hover:bg-yellow-500 disabled:opacity-50 transition-colors"
+          >
+            {isLoading ? "Загрузка..." : (isLogin ? "Войти" : "Зарегистрироваться")}
+          </button>
+          
+          <button
+            type="button"
+            onClick={() => {
+              setIsLogin(!isLogin);
+              setError("");
+            }}
+            className="w-full text-gray-400 text-sm hover:text-white transition-colors"
+            disabled={isLoading}
+          >
+            {isLogin ? "Нет аккаунта? Зарегистрироваться" : "Уже есть аккаунт? Войти"}
+          </button>
         </form>
       </div>
-    </main>
+    </div>
   );
 }

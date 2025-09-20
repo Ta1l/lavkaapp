@@ -18,6 +18,7 @@ type Props = {
   currentUser: User | null;
   isOwner: boolean;
   apiKey: string;
+  viewedUserId: number | null; // Добавляем
 };
 
 function getErrorMessage(error: unknown): string {
@@ -31,7 +32,8 @@ export default function ScheduleClientComponent({
   initialOffset, 
   currentUser, 
   isOwner,
-  apiKey
+  apiKey,
+  viewedUserId // Получаем
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -59,8 +61,12 @@ export default function ScheduleClientComponent({
       console.log('📅 Date range:', startDate, 'to', endDate);
 
       const params: Record<string, string> = { start: startDate, end: endDate };
-      const viewedUserId = searchParams.get('userId');
-      if (viewedUserId) params.userId = viewedUserId;
+      
+      // Используем viewedUserId из props
+      if (viewedUserId) {
+        params.userId = String(viewedUserId);
+        console.log('👀 Viewing user:', viewedUserId);
+      }
 
       const qs = new URLSearchParams(params).toString();
       const url = `/api/shifts?${qs}`;
@@ -147,6 +153,11 @@ export default function ScheduleClientComponent({
     }
   };
 
+  // Обновляем useEffect для перезагрузки при изменении viewedUserId
+  useEffect(() => {
+    loadSchedule();
+  }, [offset, apiKey, viewedUserId]); // Добавили viewedUserId в зависимости
+
   useEffect(() => {
     const refreshData = async () => { 
       await loadSchedule();
@@ -161,7 +172,7 @@ export default function ScheduleClientComponent({
         clearInterval(pollingIntervalRef.current);
       }
     };
-  }, [isOwner, offset, apiKey]);
+  }, [isOwner]);
 
   useEffect(() => {
     setWeekDays(initialWeekDays);
@@ -322,7 +333,7 @@ export default function ScheduleClientComponent({
     ? `${format(mainWeek[0].date, 'd MMM')} - ${format(mainWeek[6].date, 'd MMM')}`
     : `${format(nextWeek[0].date, 'd MMM')} - ${format(nextWeek[6].date, 'd MMM')}`;
 
-  console.log('ScheduleClientComponent - isOwner:', isOwner);
+  console.log('ScheduleClientComponent - isOwner:', isOwner, 'viewedUserId:', viewedUserId);
 
   return (
     <>

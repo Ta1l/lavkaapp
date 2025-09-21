@@ -13,8 +13,25 @@ async function getUserFromSession(): Promise<User | null> {
     } catch { return null; }
 }
 
+async function getUserFromRequest(request: NextRequest): Promise<User | null> {
+    // Сначала проверяем API ключ (для бота)
+    const authHeader = request.headers.get('Authorization');
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+        const apiKey = authHeader.substring(7);
+        if (apiKey) {
+            const { rows } = await pool.query<User>('SELECT id, username, full_name FROM users WHERE api_key = $1', [apiKey]);
+            if (rows.length > 0) {
+                return rows[0];
+            }
+        }
+    }
+    
+    // Затем проверяем сессию (для веб-приложения)
+    return getUserFromSession();
+}
+
 export async function POST(request: NextRequest) {
-    const user = await getUserFromSession();
+    const user = await getUserFromRequest(request);
     if (!user) return NextResponse.json({ error: 'Необходима авторизация' }, { status: 401 });
     try {
         const { slotId } = await request.json();
@@ -31,16 +48,10 @@ export async function POST(request: NextRequest) {
     }
 }
 
-// --- ДОБАВЛЕНО: Метод PATCH для редактирования слотов ---
 export async function PATCH(request: NextRequest) {
-    const user = await getUserFromSession();
+    const user = await getUserFromRequest(request);
     if (!user) {
         return NextResponse.json({ error: 'Необходима авторизация' }, { status: 401 });
-    }
-    
-    // Проверяем, что это владелец (id = 1)
-    if (user.id !== 1) {
-        return NextResponse.json({ error: 'Только владелец может редактировать слоты' }, { status: 403 });
     }
 
     try {
@@ -50,18 +61,35 @@ export async function PATCH(request: NextRequest) {
             return NextResponse.json({ error: 'Необходимо указать slotId, startTime и endTime' }, { status: 400 });
         }
 
+        // Проверяем, что слот принадлежит пользователю
+        const checkResult = await pool.query(
+            'SELECT user_id FROM shifts WHERE id = $1',
+            [slotId]
+        );
+        
+        if (checkResult.rowCount === 0) {
+            return NextResponse.json({ error: 'Слот не найден' }, { status: 404 });
+        }
+        
+        const slot = checkResult.rows[0];
+        
+        // Пользователь может редактировать только свои слоты
+        if (slot.user_id !== user.id) {
+            return NextResponse.json({ error: 'Вы можете редактировать только свои слоты' }, { status: 403 });
+        }
+
         const shiftCode = `${startTime}-${endTime}`;
         
         console.log(`[API SLOTS PATCH] User ${user.id} updating slot ${slotId} to ${shiftCode}`);
 
         // Обновляем слот
         const result = await pool.query<Shift>(
-            'UPDATE shifts SET shift_code = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
-            [shiftCode, slotId]
+            'UPDATE shifts SET shift_code = $1, updated_at = NOW() WHERE id = $2 AND user_id = $3 RETURNING *',
+            [shiftCode, slotId, user.id]
         );
 
         if (result.rowCount === 0) {
-            return NextResponse.json({ error: 'Слот не найден' }, { status: 404 });
+            return NextResponse.json({ error: 'Не удалось обновить слот' }, { status: 500 });
         }
 
         console.log(`[API SLOTS PATCH] Success: Slot ${slotId} updated to ${shiftCode}`);
@@ -71,11 +99,9 @@ export async function PATCH(request: NextRequest) {
         return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });
     }
 }
-// --- КОНЕЦ ДОБАВЛЕНИЯ ---
 
-// --- НАЧАЛО ИЗМЕНЕНИЙ ---
 export async function DELETE(request: NextRequest) {
-    const user = await getUserFromSession();
+    const user = await getUserFromRequest(request);
     if (!user) {
         return NextResponse.json({ error: 'Необходима авторизация' }, { status: 401 });
     }
@@ -90,10 +116,26 @@ export async function DELETE(request: NextRequest) {
         
         console.log(`[API SLOTS DELETE] User ${user.id} attempting to DELETE slot ${slotId}`);
 
-        // ИЗМЕНЕНИЕ: Вместо UPDATE теперь DELETE. Слот удаляется навсегда.
+        // Проверяем, что слот принадлежит пользователю
+        const checkResult = await pool.query(
+            'SELECT user_id FROM shifts WHERE id = $1',
+            [slotId]
+        );
+        
+        if (checkResult.rowCount === 0) {
+            return NextResponse.json({ error: 'Слот не найден' }, { status: 404 });
+        }
+        
+        const slot = checkResult.rows[0];
+        
+        // Пользователь может удалять только свои слоты
+        if (slot.user_id !== user.id) {
+            return NextResponse.json({ error: 'Вы можете удалять только свои слоты' }, { status: 403 });
+        }
+
         const result = await pool.query(
-          `DELETE FROM shifts WHERE id = $1`,
-          [parseInt(slotId, 10)]
+          `DELETE FROM shifts WHERE id = $1 AND user_id = $2`,
+          [parseInt(slotId, 10), user.id]
         );
 
         if (result.rowCount === 0) {
@@ -109,4 +151,16 @@ export async function DELETE(request: NextRequest) {
         return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });
     }
 }
-// --- КОНЕЦ ИЗМЕНЕНИЙ ---
+
+// OPTIONS для CORS
+export async function OPTIONS() {
+    return new NextResponse(null, {
+        status: 200,
+        headers: {
+            'Access-Control-Allow-Origin': '*',
+            'Access-Control-Allow-Methods': 'GET, POST, PATCH, DELETE, OPTIONS',
+            'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+            'Access-Control-Max-Age': '86400',
+        },
+    });
+}

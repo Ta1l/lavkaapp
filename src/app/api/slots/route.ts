@@ -31,6 +31,48 @@ export async function POST(request: NextRequest) {
     }
 }
 
+// --- ДОБАВЛЕНО: Метод PATCH для редактирования слотов ---
+export async function PATCH(request: NextRequest) {
+    const user = await getUserFromSession();
+    if (!user) {
+        return NextResponse.json({ error: 'Необходима авторизация' }, { status: 401 });
+    }
+    
+    // Проверяем, что это владелец (id = 1)
+    if (user.id !== 1) {
+        return NextResponse.json({ error: 'Только владелец может редактировать слоты' }, { status: 403 });
+    }
+
+    try {
+        const { slotId, startTime, endTime } = await request.json();
+        
+        if (!slotId || !startTime || !endTime) {
+            return NextResponse.json({ error: 'Необходимо указать slotId, startTime и endTime' }, { status: 400 });
+        }
+
+        const shiftCode = `${startTime}-${endTime}`;
+        
+        console.log(`[API SLOTS PATCH] User ${user.id} updating slot ${slotId} to ${shiftCode}`);
+
+        // Обновляем слот
+        const result = await pool.query<Shift>(
+            'UPDATE shifts SET shift_code = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+            [shiftCode, slotId]
+        );
+
+        if (result.rowCount === 0) {
+            return NextResponse.json({ error: 'Слот не найден' }, { status: 404 });
+        }
+
+        console.log(`[API SLOTS PATCH] Success: Slot ${slotId} updated to ${shiftCode}`);
+        return NextResponse.json(result.rows[0]);
+    } catch (error) {
+        console.error('[API SLOTS PATCH Error]', error);
+        return NextResponse.json({ error: 'Внутренняя ошибка сервера' }, { status: 500 });
+    }
+}
+// --- КОНЕЦ ДОБАВЛЕНИЯ ---
+
 // --- НАЧАЛО ИЗМЕНЕНИЙ ---
 export async function DELETE(request: NextRequest) {
     const user = await getUserFromSession();

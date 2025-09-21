@@ -18,7 +18,7 @@ type Props = {
   currentUser: User | null;
   isOwner: boolean;
   apiKey: string;
-  viewedUserId: number | null; // Добавляем
+  viewedUserId: number | null;
 };
 
 function getErrorMessage(error: unknown): string {
@@ -33,7 +33,7 @@ export default function ScheduleClientComponent({
   currentUser, 
   isOwner,
   apiKey,
-  viewedUserId // Получаем
+  viewedUserId
 }: Props) {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -42,6 +42,10 @@ export default function ScheduleClientComponent({
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState<Day | null>(null);
+  
+  // ДОБАВЛЕНО: Новые состояния для редактирования
+  const [editingSlot, setEditingSlot] = useState<{day: Day, slot: TimeSlot} | null>(null);
+  const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -62,7 +66,6 @@ export default function ScheduleClientComponent({
 
       const params: Record<string, string> = { start: startDate, end: endDate };
       
-      // Используем viewedUserId из props
       if (viewedUserId) {
         params.userId = String(viewedUserId);
         console.log('👀 Viewing user:', viewedUserId);
@@ -98,14 +101,13 @@ export default function ScheduleClientComponent({
         slots: [],
       }));
 
-      // Добавим логирование для отладки
       console.log('📅 Week days template:', weekDaysTemplate.map(d => ({
         date: format(d.date, 'yyyy-MM-dd'),
         formattedDate: d.formattedDate
       })));
 
       for (const r of rows) {
-        const rowDateStr = String(r.shift_date).split('T')[0]; // Убираем время из даты
+        const rowDateStr = String(r.shift_date).split('T')[0];
         console.log('🔍 Processing shift:', {
           id: r.id,
           date: rowDateStr,
@@ -153,10 +155,9 @@ export default function ScheduleClientComponent({
     }
   };
 
-  // Обновляем useEffect для перезагрузки при изменении viewedUserId
   useEffect(() => {
     loadSchedule();
-  }, [offset, apiKey, viewedUserId]); // Добавили viewedUserId в зависимости
+  }, [offset, apiKey, viewedUserId]);
 
   useEffect(() => {
     const refreshData = async () => { 
@@ -207,63 +208,106 @@ export default function ScheduleClientComponent({
     setIsModalOpen(true);
   };
   
+  // ДОБАВЛЕНО: Обработчик редактирования слота
+  const handleEditSlot = (day: Day, slot: TimeSlot) => {
+    console.log('handleEditSlot called for slot:', slot);
+    setEditingSlot({ day, slot });
+    setIsEditModalOpen(true);
+  };
+  
+  // ИЗМЕНЕНО: Обновленный обработчик для модального окна
   const handleModalDone = async (startTime: string, endTime: string) => {
-    if (!selectedDay) {
-      console.log('❌ No selected day!');
-      return;
-    }
-    
     setLoading(true);
+    
     try {
-      const dateStr = format(selectedDay.date, 'yyyy-MM-dd');
-      const requestBody = { 
-        date: dateStr, 
-        startTime, 
-        endTime,
-        assignToSelf: isOwner
-      };
-      
-      console.log('📤 Creating slot with data:', requestBody);
-      console.log('🔑 API Key:', apiKey);
-      console.log('👤 isOwner:', isOwner);
-      console.log('📅 Selected day:', selectedDay);
-      
-      const res = await fetch('/api/shifts', {
-        method: 'POST',
-        headers: { 
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`
-        },
-        body: JSON.stringify(requestBody),
-      });
-      
-      const responseText = await res.text();
-      console.log('📥 Response status:', res.status);
-      console.log('📥 Response text:', responseText);
-      
-      let responseData;
-      try {
-        responseData = JSON.parse(responseText);
-        console.log('📥 Response data:', responseData);
-      } catch (e) {
-        console.error('❌ Failed to parse response:', e);
-        throw new Error('Invalid response from server');
+      // Если редактируем существующий слот
+      if (editingSlot) {
+        console.log('📝 Editing slot:', editingSlot.slot.id);
+        
+        const res = await fetch('/api/slots', {
+          method: 'PATCH',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify({ 
+            slotId: editingSlot.slot.id,
+            startTime, 
+            endTime 
+          }),
+        });
+        
+        const responseText = await res.text();
+        console.log('📥 Edit response status:', res.status);
+        console.log('📥 Edit response text:', responseText);
+        
+        let responseData;
+        try {
+          responseData = JSON.parse(responseText);
+        } catch (e) {
+          console.error('❌ Failed to parse edit response:', e);
+          throw new Error('Invalid response from server');
+        }
+        
+        if (!res.ok) {
+          throw new Error(responseData.error || 'Не удалось обновить слот');
+        }
+        
+        console.log('✅ Slot updated successfully');
+      } 
+      // Если создаем новый слот
+      else if (selectedDay) {
+        console.log('➕ Creating new slot');
+        
+        const dateStr = format(selectedDay.date, 'yyyy-MM-dd');
+        const requestBody = { 
+          date: dateStr, 
+          startTime, 
+          endTime,
+          assignToSelf: isOwner
+        };
+        
+        console.log('📤 Creating slot with data:', requestBody);
+        
+        const res = await fetch('/api/shifts', {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiKey}`
+          },
+          body: JSON.stringify(requestBody),
+        });
+        
+        const responseText = await res.text();
+        console.log('📥 Response status:', res.status);
+        console.log('📥 Response text:', responseText);
+        
+        let responseData;
+        try {
+          responseData = JSON.parse(responseText);
+        } catch (e) {
+          console.error('❌ Failed to parse response:', e);
+          throw new Error('Invalid response from server');
+        }
+        
+        if (!res.ok) {
+          throw new Error(responseData.error || 'Не удалось создать слот');
+        }
+        
+        console.log('✅ Slot created successfully');
       }
       
-      if (!res.ok) {
-        throw new Error(responseData.error || 'Не удалось создать слот');
-      }
-      
-      console.log('✅ Slot created successfully, refreshing data...');
       await refreshData();
       console.log('✅ Data refreshed');
       
     } catch (err) {
-      console.error('❌ Error creating slot:', err);
+      console.error('❌ Error:', err);
       alert(getErrorMessage(err)); 
     } finally {
-      setIsModalOpen(false); 
+      setIsModalOpen(false);
+      setIsEditModalOpen(false);
       setSelectedDay(null);
+      setEditingSlot(null);
       setLoading(false);
     }
   };
@@ -354,6 +398,7 @@ export default function ScheduleClientComponent({
           currentUserId={currentUser?.id || null}
           isOwner={isOwner}
           onAddSlot={handleAddSlot}
+          onEditSlot={handleEditSlot} // ДОБАВЛЕНО: передаем функцию редактирования
           onTakeSlot={handleTakeSlot}
           onDeleteSlot={handleDeleteSlot}
           onDeleteDaySlots={handleDeleteDaySlots}
@@ -367,6 +412,8 @@ export default function ScheduleClientComponent({
             }}
         />
       </div>
+      
+      {/* Модальное окно для создания слота */}
       {isModalOpen && selectedDay && (
         <AddSlotModal
           onClose={() => {
@@ -374,6 +421,19 @@ export default function ScheduleClientComponent({
             setSelectedDay(null);
           }}
           onDone={handleModalDone}
+        />
+      )}
+      
+      {/* ДОБАВЛЕНО: Модальное окно для редактирования слота */}
+      {isEditModalOpen && editingSlot && (
+        <AddSlotModal
+          onClose={() => {
+            setIsEditModalOpen(false);
+            setEditingSlot(null);
+          }}
+          onDone={handleModalDone}
+          initialStartTime={editingSlot.slot.startTime}
+          initialEndTime={editingSlot.slot.endTime}
         />
       )}
     </>

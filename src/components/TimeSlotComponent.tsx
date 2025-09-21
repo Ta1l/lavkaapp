@@ -10,7 +10,8 @@ interface TimeSlotComponentProps {
     slot: TimeSlot;
     day: Day;
     onTakeSlot: (day: Day, slot: TimeSlot) => void;
-    onDeleteSlot: (day: Day, slotId: number) => void; // <--- ИЗМЕНЕНО НАЗВАНИЕ
+    onDeleteSlot: (day: Day, slotId: number) => void;
+    onEditSlot?: (day: Day, slot: TimeSlot) => void; // Новый проп
     currentUserId: number | null;
     isOwner: boolean;
 }
@@ -19,28 +20,32 @@ export default function TimeSlotComponent({
     slot,
     day,
     onTakeSlot,
-    onDeleteSlot, // <--- ИЗМЕНЕНО НАЗВАНИЕ
+    onDeleteSlot,
+    onEditSlot, // Новый проп
     currentUserId,
     isOwner,
 }: TimeSlotComponentProps) {
     const isSlotAvailable = slot.user_id === null;
     const isSlotTaken = slot.user_id !== null;
-    
-    // --- НАЧАЛО ИЗМЕНЕНИЙ ---
-    // Вычисляем, занят ли слот ДРУГИМ пользователем
     const isTakenByOther = slot.user_id !== null && slot.user_id !== currentUserId;
-    // --- КОНЕЦ ИЗМЕНЕНИЙ ---
-
     const canBeTaken = isSlotAvailable && currentUserId !== null;
+    
+    // Владелец может редактировать любой слот
+    const canEdit = isOwner && onEditSlot;
 
     const handleClick = (e: React.MouseEvent) => {
         e.stopPropagation();
-        if (canBeTaken) {
+        
+        // Если владелец - открываем редактирование
+        if (canEdit) {
+            onEditSlot(day, slot);
+        } 
+        // Если обычный пользователь и слот свободен - занимаем
+        else if (canBeTaken) {
             onTakeSlot(day, slot);
         }
     };
     
-    // Владелец расписания видит крестик на любом занятом слоте
     const canDelete = isSlotTaken && isOwner;
 
     return (
@@ -49,39 +54,60 @@ export default function TimeSlotComponent({
                 "w-full h-[35px] rounded-[20px] flex items-center justify-between px-3 transition-all duration-200 relative",
                 {
                     "bg-[#353333]": isSlotAvailable,
-                    "cursor-pointer hover:bg-[#4a4848]": canBeTaken,
+                    "cursor-pointer hover:bg-[#4a4848]": canBeTaken || canEdit,
                     "bg-gray-700": isSlotTaken,
-                    "cursor-default": !canBeTaken,
+                    "cursor-default": !canBeTaken && !canEdit,
                 }
             )}
             onClick={handleClick}
-            title={canBeTaken ? "Нажмите, чтобы занять слот" : (slot.userName ? `Занято: ${slot.userName}` : "")}
+            title={
+                canEdit ? "Нажмите для редактирования" :
+                canBeTaken ? "Нажмите, чтобы занять слот" : 
+                (slot.userName ? `Занято: ${slot.userName}` : "")
+            }
         >
-            <div className="text-white text-center font-sans text-[14px]">
-                {`${slot.startTime} - ${slot.endTime}`}
+            <div className="flex items-center gap-2">
+                <div className="text-white text-center font-sans text-[14px]">
+                    {`${slot.startTime} - ${slot.endTime}`}
+                </div>
+                
+                {/* Иконка редактирования для владельца */}
+                {canEdit && (
+                    <svg 
+                        className="w-4 h-4 text-gray-400"
+                        fill="none" 
+                        stroke="currentColor" 
+                        viewBox="0 0 24 24"
+                    >
+                        <path 
+                            strokeLinecap="round" 
+                            strokeLinejoin="round" 
+                            strokeWidth={2} 
+                            d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" 
+                        />
+                    </svg>
+                )}
             </div>
             
-            {/* --- ИЗМЕНЕНИЕ: Показываем имя, только если слот занят ДРУГИМ пользователем --- */}
             {isTakenByOther && slot.userName && (
                 <div className="text-gray-300 text-xs font-light truncate max-w-[50%]">
                     {slot.userName}
                 </div>
             )}
             
-            {/* Кнопка теперь вызывает onDeleteSlot */}
             {canDelete && (
-                 <button
+                <button
                     type="button"
                     onClick={(e) => {
                         e.stopPropagation();
                         if (slot.id) {
-                            onDeleteSlot(day, slot.id); // <--- ИЗМЕНЕНО НАЗВАНИЕ
+                            onDeleteSlot(day, slot.id);
                         }
                     }}
                     className="p-1 rounded-full text-gray-400 hover:text-white hover:bg-red-600 active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
                     title="Удалить слот"
                 >
-                     <svg
+                    <svg
                         xmlns="http://www.w3.org/2000/svg"
                         height="18px"
                         viewBox="0 -960 960 960"
@@ -89,7 +115,7 @@ export default function TimeSlotComponent({
                         fill="currentColor"
                     >
                         <path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z" />
-                     </svg>
+                    </svg>
                 </button>
             )}
         </div>

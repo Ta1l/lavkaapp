@@ -9,9 +9,14 @@ declare global {
   interface Window {
     Telegram?: {
       WebApp?: {
+        ready: () => void;
+        expand: () => void;
         initDataUnsafe?: {
           user?: {
             id: number;
+            first_name?: string;
+            last_name?: string;
+            username?: string;
           };
         };
       };
@@ -25,10 +30,63 @@ export default function HomePage() {
   const [isLogin, setIsLogin] = useState(true);
   const [error, setError] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [checkingTelegram, setCheckingTelegram] = useState(true);
   const router = useRouter();
 
   useEffect(() => {
-    // Проверяем параметры URL для отображения ошибок
+    // Инициализация Telegram WebApp
+    if (window.Telegram?.WebApp) {
+      window.Telegram.WebApp.ready();
+      window.Telegram.WebApp.expand();
+    }
+
+    // Проверяем автоматический вход через Telegram
+    checkAutoLogin();
+  }, []);
+
+  const checkAutoLogin = async () => {
+    try {
+      // Проверяем, открыто ли приложение через Telegram
+      const telegramUser = window.Telegram?.WebApp?.initDataUnsafe?.user;
+      
+      if (!telegramUser?.id) {
+        console.log('Not in Telegram context');
+        setCheckingTelegram(false);
+        checkUrlParams();
+        return;
+      }
+
+      console.log('Telegram user detected:', telegramUser);
+
+      // Пытаемся автоматически войти
+      const response = await fetch("/api/auth/auto-login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ telegramId: String(telegramUser.id) })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.apiKey) {
+          console.log('✅ Auto-login successful');
+          localStorage.setItem("apiKey", data.apiKey);
+          window.location.href = "/schedule/0";
+          return;
+        }
+      } else if (response.status === 404) {
+        // Пользователь не связан - показываем форму входа
+        console.log('Telegram account not linked yet');
+        setError('Для первого входа введите логин и пароль');
+      }
+    } catch (err) {
+      console.error("Auto-login error:", err);
+    } finally {
+      setCheckingTelegram(false);
+      checkUrlParams();
+    }
+  };
+
+  const checkUrlParams = () => {
     const params = new URLSearchParams(window.location.search);
     const errorParam = params.get('error');
     
@@ -47,7 +105,7 @@ export default function HomePage() {
           setError('Произошла ошибка');
       }
     }
-  }, []);
+  };
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -55,7 +113,6 @@ export default function HomePage() {
     setIsLoading(true);
 
     try {
-      // Сохраняем логин и пароль для последующего получения токена
       const savedUsername = username;
       const savedPassword = password;
 
@@ -69,18 +126,17 @@ export default function HomePage() {
         body: formData,
       });
 
-      // Проверяем редирект
       if (response.redirected) {
         const url = new URL(response.url);
         if (url.pathname === "/schedule/0") {
-          // Успешный вход/регистрация - теперь получаем API ключ
+          // Успешный вход/регистрация - получаем API ключ
           try {
             const headers: HeadersInit = {
               "Content-Type": "application/json"
             };
             
             // Добавляем Telegram ID если есть
-            if (typeof window !== 'undefined' && window.Telegram?.WebApp?.initDataUnsafe?.user?.id) {
+            if (window.Telegram?.WebApp?.initDataUnsafe?.user?.id) {
               headers["x-telegram-id"] = String(window.Telegram.WebApp.initDataUnsafe.user.id);
             }
 
@@ -99,17 +155,13 @@ export default function HomePage() {
                 localStorage.setItem("apiKey", data.apiKey);
                 console.log("✅ API ключ сохранен");
               }
-            } else {
-              console.error("Failed to get API token");
             }
           } catch (err) {
             console.error("Error getting token:", err);
           }
           
-          // Переходим на страницу расписания
           window.location.href = "/schedule/0";
         } else {
-          // Ошибка - парсим параметры
           const errorParam = url.searchParams.get('error');
           if (errorParam === 'user_exists') {
             setError('Пользователь с таким именем уже существует');
@@ -128,6 +180,15 @@ export default function HomePage() {
     }
   }
 
+  // Показываем индикатор загрузки при проверке Telegram
+  if (checkingTelegram) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center p-4">
+        <div className="text-white">Загрузка...</div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-black flex items-center justify-center p-4">
       <div className="w-full max-w-sm">
@@ -143,6 +204,12 @@ export default function HomePage() {
           {error && (
             <div className="bg-red-500/20 border border-red-500 text-red-500 p-3 rounded text-sm">
               {error}
+            </div>
+          )}
+          
+          {window.Telegram?.WebApp?.initDataUnsafe?.user && (
+            <div className="bg-blue-500/20 border border-blue-500 text-blue-400 p-3 rounded text-sm">
+              👤 Вход через Telegram: {window.Telegram.WebApp.initDataUnsafe.user.first_name}
             </div>
           )}
           

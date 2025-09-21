@@ -4,7 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { cookies } from 'next/headers';
 import { pool } from '@/lib/db';
 import { format } from 'date-fns';
-import { User } from '@/types/shifts'; // Теперь импортируется правильный тип
+import { User } from '@/types/shifts';
 
 /**
  * Универсальная функция для аутентификации пользователя.
@@ -16,10 +16,9 @@ async function getUserFromRequest(request: NextRequest): Promise<User | null> {
     if (authHeader && authHeader.startsWith('Bearer ')) {
         const apiKey = authHeader.substring(7);
         if (apiKey) {
-            // Уточняем тип: из БД не приходит isOwner
             const { rows } = await pool.query<Omit<User, 'isOwner'>>('SELECT id, username, full_name FROM users WHERE api_key = $1', [apiKey]);
             if (rows.length > 0) {
-                // Теперь эта строка корректна, т.к. тип User содержит isOwner
+                // Определяем isOwner по id пользователя (например, id=1 - владелец)
                 return { ...rows[0], isOwner: rows[0].id === 1 };
             }
         }
@@ -30,7 +29,6 @@ async function getUserFromRequest(request: NextRequest): Promise<User | null> {
         if (!cookie) return null;
         const parsed = JSON.parse(cookie.value);
         if (parsed?.id) {
-            // И эта строка теперь тоже корректна
             return { ...parsed, isOwner: parsed.id === 1 };
         }
         return null;
@@ -62,7 +60,6 @@ export async function OPTIONS(request: NextRequest) {
     });
 }
 
-// GET-запросы не меняем, они выглядят корректно
 export async function GET(request: NextRequest) {
   try {
     const url = new URL(request.url);
@@ -93,28 +90,20 @@ export async function GET(request: NextRequest) {
       where.push(`s.shift_date < $${params.length}`);
     }
     
-    // Логика для владельца: он видит свои слоты и все доступные
-    if (currentUser?.isOwner) {
-       if (viewedUserIdParam && String(currentUser.id) !== viewedUserIdParam) {
-           // Владелец смотрит чужой профиль - показываем только слоты этого юзера
-           params.push(parseInt(viewedUserIdParam, 10));
-           where.push(`s.user_id = $${params.length}`);
-       } else {
-           // Владелец смотрит свой профиль или общий вид
-           params.push(currentUser.id);
-           where.push(`(s.user_id = $${params.length} OR s.status = 'available')`);
-       }
+    // Если указан конкретный userId - показываем только его слоты
+    if (viewedUserIdParam) {
+      params.push(parseInt(viewedUserIdParam, 10));
+      where.push(`s.user_id = $${params.length}`);
     } 
-    // Логика для обычного пользователя: он видит только свои слоты и доступные
+    // Если текущий пользователь авторизован - показываем его слоты и доступные
     else if (currentUser) {
-        params.push(currentUser.id);
-        where.push(`(s.user_id = $${params.length} OR s.status = 'available')`);
+      params.push(currentUser.id);
+      where.push(`(s.user_id = $${params.length} OR s.status = 'available')`);
     }
-    // Логика для неавторизованного запроса: видит только доступные слоты
+    // Для неавторизованных - только доступные слоты
     else {
-        where.push(`s.status = 'available'`);
+      where.push(`s.status = 'available'`);
     }
-
 
     if (where.length) {
       query += ' WHERE ' + where.join(' AND ');
@@ -122,7 +111,6 @@ export async function GET(request: NextRequest) {
     query += ' ORDER BY s.shift_date, s.shift_code';
     
     const result = await pool.query(query, params);
-    // Даты могут приходить в формате ISODate, нормализуем их
     const rows = result.rows.map(row => ({
         ...row,
         shift_date: format(new Date(row.shift_date), 'yyyy-MM-dd')
@@ -135,7 +123,6 @@ export async function GET(request: NextRequest) {
   }
 }
 
-// POST-запросы остаются с нашими предыдущими исправлениями
 export async function POST(request: NextRequest) {
   console.log('[POST /api/shifts] ========== REQUEST START ==========');
   
@@ -150,9 +137,10 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    if (!currentUser.isOwner) {
-      return NextResponse.json({ error: 'Forbidden: Only the owner can create shifts.' }, { status: 403 });
-    }
+    // УДАЛЯЕМ ПРОВЕРКУ isOwner - теперь любой авторизованный пользователь может создавать слоты
+    // if (!currentUser.isOwner) {
+    //   return NextResponse.json({ error: 'Forbidden: Only the owner can create shifts.' }, { status: 403 });
+    // }
 
     const { date, startTime, endTime, assignToSelf } = body;
     if (!date || !startTime || !endTime) {
@@ -165,11 +153,28 @@ export async function POST(request: NextRequest) {
     }
     
     const shiftCode = `${startTime}-${endTime}`;
-    const userId = assignToSelf ? currentUser.id : null;
-    const status = assignToSelf ? 'taken' : 'available'; 
-    
     const client = await pool.connect();
+    
     try {
+      await client.query('BEGIN');
+      
+      // Проверяем, существует ли уже такой слот для этого пользователя
+      const existing = await client.query(
+        'SELECT * FROM shifts WHERE shift_date = $1 AND shift_code = $2 AND user_id = $3',
+        [dateStr, shiftCode, currentUser.id]
+      );
+
+      if (existing.rowCount && existing.rowCount > 0) {
+        await client.query('COMMIT');
+        console.log('[POST /api/shifts] User already has this shift:', existing.rows[0]);
+        return NextResponse.json(existing.rows[0], { status: 200 });
+      }
+      
+      // Создаем новый слот
+      // assignToSelf всегда true для обычных пользователей
+      const userId = assignToSelf !== false ? currentUser.id : null;
+      const status = userId ? 'pending' : 'available';
+      
       const insertQuery = `
         INSERT INTO shifts (shift_date, day_of_week, shift_code, status, user_id)
         VALUES ($1, EXTRACT(ISODOW FROM $1::date), $2, $3, $4)
@@ -178,13 +183,17 @@ export async function POST(request: NextRequest) {
       
       const result = await client.query(insertQuery, [dateStr, shiftCode, status, userId]);
       
+      await client.query('COMMIT');
+      
       console.log('[POST /api/shifts] New shift created:', result.rows[0]);
       return NextResponse.json(result.rows[0], { status: 201 });
 
     } catch (err: any) {
-      if (err.code === '23505' && err.constraint === 'shifts_user_date_code_unique') {
-        console.warn('[POST /api/shifts] Attempted to create a duplicate shift for the same user.');
-        return NextResponse.json({ error: 'Этот слот для данного пользователя уже существует' }, { status: 409 });
+      await client.query('ROLLBACK');
+      
+      if (err.code === '23505') {
+        console.warn('[POST /api/shifts] Duplicate shift constraint violation');
+        return NextResponse.json({ error: 'Этот слот уже существует' }, { status: 409 });
       }
       
       console.error('[POST /api/shifts] Database Error:', err);
@@ -198,8 +207,6 @@ export async function POST(request: NextRequest) {
   }
 }
 
-
-// DELETE-запросы остаются с нашими предыдущими исправлениями
 export async function DELETE(request: NextRequest) {
   const currentUser = await getUserFromRequest(request);
   if (!currentUser) {
@@ -221,18 +228,12 @@ export async function DELETE(request: NextRequest) {
   try {
     await client.query('BEGIN');
     
-    let deleteResult;
-    if (currentUser.isOwner) {
-        console.log(`[API Shifts DELETE] Owner ${currentUser.id} clearing ALL shifts for ${dateStr}`);
-        deleteResult = await client.query(
-            `DELETE FROM shifts WHERE shift_date = $1`, [dateStr]
-        );
-    } else {
-        console.log(`[API Shifts DELETE] User ${currentUser.id} clearing THEIR shifts for ${dateStr}`);
-        deleteResult = await client.query(
-            `DELETE FROM shifts WHERE shift_date = $1 AND user_id = $2`, [dateStr, currentUser.id]
-        );
-    }
+    // Пользователи могут удалять только свои слоты
+    console.log(`[API Shifts DELETE] User ${currentUser.id} clearing their shifts for ${dateStr}`);
+    const deleteResult = await client.query(
+      `DELETE FROM shifts WHERE shift_date = $1 AND user_id = $2`,
+      [dateStr, currentUser.id]
+    );
     
     console.log(`[API Shifts DELETE] Deleted ${deleteResult.rowCount} shifts.`);
 

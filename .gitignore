@@ -46,3 +46,46 @@ ecosystem.config.js
 docker-compose.local.yml
 db.env
 udo nginx -t
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# Database
+*.db
+*.sqlite3
+
+# Next.js
+.next/
+out/
+node_modules/
+
+# Временные файлы
+*.tmp
+*.temp

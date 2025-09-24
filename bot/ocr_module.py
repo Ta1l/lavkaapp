@@ -63,13 +63,8 @@ class SlotParser:
             flags=re.IGNORECASE
         )
         
-        # Диапазон недели (игнорируем)
-        self.week_range_re = re.compile(
-            rf"\d{{1,2}}\s+({months_alt})\s+\d{{4}}\s*[-–—]\s*\d{{1,2}}\s+({months_alt})\s+\d{{4}}",
-            flags=re.IGNORECASE
-        )
-        
-        # Поиск времени
+        # Поиск времени - улучшенный паттерн для формата "8:00 - 12:00"
+        self.time_range_re = re.compile(r"(\d{1,2}[:.]\d{2})\s*[-–—]\s*(\d{1,2}[:.]\d{2})")
         self.time_token_re = re.compile(r"(\d{1,2}[:.]\d{2})")
         
         # Счетчик отмененных слотов для статистики
@@ -80,6 +75,7 @@ class SlotParser:
         try:
             img = cv2.imread(image_path)
             if img is None:
+                logger.warning(f"Cannot read image: {image_path}")
                 return None
             
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -98,13 +94,21 @@ class SlotParser:
                 
             return bw
         except Exception as e:
+            logger.error(f"Error preprocessing image {image_path}: {e}")
             return None
 
     def extract_lines_with_coords(self, image_path: str) -> List[Dict]:
         """Извлечение текстовых строк с координатами"""
         processed = self.preprocess_image(image_path)
         if processed is None:
-            return []
+            # Попытка работать с оригинальным изображением если предобработка не удалась
+            try:
+                img = cv2.imread(image_path)
+                if img is None:
+                    return []
+                processed = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            except:
+                return []
         
         try:
             pil_image = Image.fromarray(processed)
@@ -132,21 +136,11 @@ class SlotParser:
             lines.sort(key=lambda l: (l["y"], l["x"]))
             return lines
             
-        except Exception:
+        except Exception as e:
+            logger.error(f"Error extracting text from {image_path}: {e}")
             return []
 
-    def _pick_year_from_week_range(self, lines: List[Dict]) -> Optional[int]:
-        """Извлечение года из диапазона недели"""
-        for ln in lines[:6]:
-            m = re.search(r"\b(\d{4})\b", ln["text"])
-            if m:
-                try:
-                    return int(m.group(1))
-                except:
-                    pass
-        return None
-
-    def parse_date_heading(self, text: str, fallback_year: Optional[int]) -> Optional[Dict]:
+    def parse_date_heading(self, text: str) -> Optional[Dict]:
         """Парсинг заголовка даты"""
         m = self.date_heading_re.match(text.strip())
         if not m:
@@ -155,7 +149,14 @@ class SlotParser:
         day = int(m.group(1))
         month_name = m.group(2).lower()
         month = self.months.get(month_name)
-        year = fallback_year or datetime.now().year
+        
+        # Используем текущий год всегда (слоты только на текущую неделю)
+        year = datetime.now().year
+        
+        # Проверяем, не нужно ли использовать следующий год (для конца декабря)
+        current_month = datetime.now().month
+        if current_month == 12 and month == 1:
+            year += 1
         
         try:
             date_obj = datetime(year, month, day)
@@ -165,19 +166,31 @@ class SlotParser:
 
     def parse_time_in_text(self, text: str) -> Optional[Tuple[str, str]]:
         """Поиск пары времени в тексте"""
-        tokens = self.time_token_re.findall(text)
-        if len(tokens) < 2:
-            return None
-            
-        t0 = tokens[0].replace(".", ":")
-        t1 = tokens[1].replace(".", ":")
+        # Сначала пробуем найти полный формат "8:00 - 12:00"
+        match = self.time_range_re.search(text)
+        if match:
+            t0 = match.group(1).replace(".", ":")
+            t1 = match.group(2).replace(".", ":")
+            try:
+                datetime.strptime(t0, "%H:%M")
+                datetime.strptime(t1, "%H:%M")
+                return t0, t1
+            except:
+                pass
         
-        try:
-            datetime.strptime(t0, "%H:%M")
-            datetime.strptime(t1, "%H:%M")
-            return t0, t1
-        except:
-            return None
+        # Если не нашли, ищем два отдельных времени
+        tokens = self.time_token_re.findall(text)
+        if len(tokens) >= 2:
+            t0 = tokens[0].replace(".", ":")
+            t1 = tokens[1].replace(".", ":")
+            try:
+                datetime.strptime(t0, "%H:%M")
+                datetime.strptime(t1, "%H:%M")
+                return t0, t1
+            except:
+                pass
+        
+        return None
 
     def find_time_by_combination(self, lines: List[Dict], idx: int, max_window: int = 3, 
                                 band_top: int = -10**9, band_bottom: int = 10**9) -> Optional[Tuple[int, str, str]]:
@@ -225,14 +238,10 @@ class SlotParser:
         """Парсинг одного скриншота"""
         if not lines:
             return []
-            
-        year_guess = self._pick_year_from_week_range(lines)
         
         date_blocks = []
         for idx, ln in enumerate(lines):
-            if self.week_range_re.search(ln["text"]):
-                continue
-            di = self.parse_date_heading(ln["text"], fallback_year=year_guess)
+            di = self.parse_date_heading(ln["text"])
             if di:
                 di["y"] = ln["y"]
                 di["line_idx"] = idx
@@ -288,7 +297,7 @@ class SlotParser:
                 bands.append((db, top_y, bottom_y))
             
             for i, ln in enumerate(lines):
-                if self.week_range_re.search(ln["text"]) or self.date_heading_re.match(ln["text"].strip()):
+                if self.date_heading_re.match(ln["text"].strip()):
                     continue
                     
                 y = ln["y"]
@@ -334,6 +343,7 @@ class SlotParser:
         self.cancelled_count = 0
         
         if not os.path.exists(self.base_path):
+            logger.warning(f"Path does not exist: {self.base_path}")
             return []
         
         image_files = []
@@ -342,19 +352,27 @@ class SlotParser:
                 image_files.append(os.path.join(self.base_path, file))
         
         if not image_files:
+            logger.warning(f"No image files found in: {self.base_path}")
             return []
         
         image_files.sort(key=lambda x: os.path.getctime(x))
         
         for idx, fp in enumerate(image_files):
-            lines = self.extract_lines_with_coords(fp)
-            
-            if not lines:
-                continue
+            try:
+                lines = self.extract_lines_with_coords(fp)
                 
-            is_last = (idx == len(image_files) - 1) and len(image_files) > 1
-            slots = self.parse_screenshot(lines, is_last_screenshot=is_last)
-            all_slots.extend(slots)
+                if not lines:
+                    logger.warning(f"No text extracted from {fp}")
+                    continue
+                    
+                is_last = (idx == len(image_files) - 1) and len(image_files) > 1
+                slots = self.parse_screenshot(lines, is_last_screenshot=is_last)
+                all_slots.extend(slots)
+                
+            except Exception as e:
+                logger.error(f"Error processing screenshot {fp}: {e}")
+                # Продолжаем обработку остальных скриншотов
+                continue
         
         unique_slots = []
         seen = set()
@@ -364,7 +382,7 @@ class SlotParser:
                 seen.add(key)
                 unique_slots.append(slot)
         
-                unique_slots.sort(key=lambda s: (s["date"], s["start"]))
+        unique_slots.sort(key=lambda s: (s["date"], s["start"]))
         
         # Преобразуем в формат API
         api_slots = []
@@ -401,14 +419,26 @@ class MemorySlotParser(SlotParser):
             # Предобработка
             processed = self.preprocess_image_array(image_array)
             if processed is None:
-                return []
+                # Пробуем работать без предобработки
+                if len(image_array.shape) == 3:
+                    processed = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
+                else:
+                    processed = image_array
             
             # OCR
-            pil_processed = Image.fromarray(processed)
-            data = pytesseract.image_to_data(pil_processed, lang="rus", output_type=pytesseract.Output.DICT)
+            try:
+                pil_processed = Image.fromarray(processed)
+                data = pytesseract.image_to_data(pil_processed, lang="rus", output_type=pytesseract.Output.DICT)
+            except Exception as e:
+                logger.error(f"OCR error: {e}")
+                return []
             
             # Извлекаем строки
             lines = self._extract_lines_from_data(data)
+            
+            if not lines:
+                logger.warning("No lines extracted from memory screenshot")
+                return []
             
             # Парсим слоты
             slots = self.parse_screenshot(lines, is_last_screenshot=is_last)
@@ -456,27 +486,31 @@ class MemorySlotParser(SlotParser):
     
     def _extract_lines_from_data(self, data: Dict) -> List[Dict]:
         """Извлечение строк из OCR данных."""
-        groups = {}
-        for i in range(len(data["text"])):
-            txt = data["text"][i].strip()
-            if not txt:
-                continue
-            key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
-            groups.setdefault(key, []).append(i)
-        
-        lines = []
-        for key, idxs in groups.items():
-            idxs.sort(key=lambda j: data["left"][j])
-            parts = [data["text"][j].strip() for j in idxs if data["text"][j].strip()]
-            if not parts:
-                continue
-            text = " ".join(parts)
-            top = min(data["top"][j] for j in idxs)
-            left = min(data["left"][j] for j in idxs)
-            lines.append({"text": text, "y": int(top), "x": int(left)})
-        
-        lines.sort(key=lambda l: (l["y"], l["x"]))
-        return lines
+        try:
+            groups = {}
+            for i in range(len(data["text"])):
+                txt = data["text"][i].strip()
+                if not txt:
+                    continue
+                key = (data["block_num"][i], data["par_num"][i], data["line_num"][i])
+                groups.setdefault(key, []).append(i)
+            
+            lines = []
+            for key, idxs in groups.items():
+                idxs.sort(key=lambda j: data["left"][j])
+                parts = [data["text"][j].strip() for j in idxs if data["text"][j].strip()]
+                if not parts:
+                    continue
+                text = " ".join(parts)
+                top = min(data["top"][j] for j in idxs)
+                left = min(data["left"][j] for j in idxs)
+                lines.append({"text": text, "y": int(top), "x": int(left)})
+            
+            lines.sort(key=lambda l: (l["y"], l["x"]))
+            return lines
+        except Exception as e:
+            logger.error(f"Error extracting lines from data: {e}")
+            return []
 
 
 # Функция для тестирования модуля отдельно

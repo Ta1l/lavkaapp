@@ -2,7 +2,7 @@
 
 'use client';
 
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { Day, TimeSlot, User } from '@/types/shifts';
 import Header from './Header';
@@ -21,11 +21,28 @@ type Props = {
   viewedUserId: number | null;
 };
 
+// Вынесли в константу для переиспользования и тестирования
+const POLLING_INTERVAL = 5000;
+
+// Улучшенная функция обработки ошибок
 function getErrorMessage(error: unknown): string {
-    if (error instanceof Error) return error.message;
+    if (error instanceof Error) {
+        // Проверяем, не является ли это ошибкой отмены запроса
+        if (error.name === 'AbortError') {
+            return ''; // Не показываем ошибку для отмененных запросов
+        }
+        return error.message;
+    }
     if (typeof error === 'string' && error.length > 0) return error;
     return 'Произошла неизвестная ошибка.';
 }
+
+// Вспомогательная функция для логирования в development
+const devLog = (...args: any[]) => {
+    if (process.env.NODE_ENV === 'development') {
+        console.log(...args);
+    }
+};
 
 export default function ScheduleClientComponent({ 
   initialWeekDays, 
@@ -42,17 +59,20 @@ export default function ScheduleClientComponent({
   const [loading, setLoading] = useState(false);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [selectedDay, setSelectedDay] = useState<Day | null>(null);
-  
-  // ДОБАВЛЕНО: Новые состояния для редактирования
   const [editingSlot, setEditingSlot] = useState<{day: Day, slot: TimeSlot} | null>(null);
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
+  // Refs для хранения состояний между рендерами
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  
-  // Функция для загрузки расписания
-  const loadSchedule = async () => {
+  const abortControllerRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef<boolean>(true);
+
+  // 🔧 ИСПРАВЛЕНИЕ: useCallback для мемоизации функции loadSchedule
+  // Это предотвращает пересоздание функции и решает проблему stale closure
+  const loadSchedule = useCallback(async (signal?: AbortSignal) => {
     try {
-      console.log('🔄 Loading schedule...');
+      devLog('🔄 Loading schedule...');
+      
       const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
       const weekDaysTemplate = offset === 1 ? nextWeek : mainWeek;
 
@@ -62,23 +82,29 @@ export default function ScheduleClientComponent({
         "yyyy-MM-dd"
       );
 
-      console.log('📅 Date range:', startDate, 'to', endDate);
+      devLog('📅 Date range:', startDate, 'to', endDate);
 
       const params: Record<string, string> = { start: startDate, end: endDate };
       
       if (viewedUserId) {
         params.userId = String(viewedUserId);
-        console.log('👀 Viewing user:', viewedUserId);
+        devLog('👀 Viewing user:', viewedUserId);
       }
 
       const qs = new URLSearchParams(params).toString();
       const url = `/api/shifts?${qs}`;
-      console.log('🌐 Fetching:', url);
+      devLog('🌐 Fetching:', url);
 
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${apiKey}` },
+        signal, // 🔧 ИСПРАВЛЕНИЕ: Передаем signal для возможности отмены запроса
       });
       
+      // 🔧 ИСПРАВЛЕНИЕ: Проверяем, не был ли компонент размонтирован
+      if (!isMountedRef.current) {
+        return;
+      }
+
       if (!res.ok) {
         console.error("❌ Ошибка загрузки расписания:", res.status);
         return;
@@ -93,34 +119,22 @@ export default function ScheduleClientComponent({
         username?: string | null;
       }> = await res.json();
       
-      console.log('📊 Loaded shifts:', rows.length, 'items');
-      console.log('📊 Shifts data:', rows);
+      devLog('📊 Loaded shifts:', rows.length, 'items');
 
       const days: Day[] = weekDaysTemplate.map((d) => ({
         ...d,
         slots: [],
       }));
 
-      console.log('📅 Week days template:', weekDaysTemplate.map(d => ({
-        date: format(d.date, 'yyyy-MM-dd'),
-        formattedDate: d.formattedDate
-      })));
-
       for (const r of rows) {
         const rowDateStr = String(r.shift_date).split('T')[0];
-        console.log('🔍 Processing shift:', {
-          id: r.id,
-          date: rowDateStr,
-          code: r.shift_code,
-          user_id: r.user_id
-        });
         
         const dayIndex = days.findIndex(
           (wd) => format(wd.date, "yyyy-MM-dd") === rowDateStr
         );
         
         if (dayIndex === -1) {
-          console.log('⚠️ Day not found for date:', rowDateStr);
+          devLog('⚠️ Day not found for date:', rowDateStr);
           continue;
         }
 
@@ -136,93 +150,182 @@ export default function ScheduleClientComponent({
         };
 
         days[dayIndex].slots.push(slot);
-        console.log('✅ Added slot to day:', dayIndex, days[dayIndex].formattedDate);
       }
 
       days.forEach((d) => {
         d.slots.sort((a, b) => (a.startTime > b.startTime ? 1 : -1));
       });
 
-      console.log('📊 Final days with slots:', days.map(d => ({
+      devLog('📊 Final days with slots:', days.map(d => ({
         date: format(d.date, 'yyyy-MM-dd'),
         formattedDate: d.formattedDate,
         slotsCount: d.slots.length
       })));
 
-      setWeekDays(days);
-    } catch (error) {
-      console.error("❌ Ошибка загрузки расписания:", error);
+      // 🔧 ИСПРАВЛЕНИЕ: Финальная проверка перед обновлением состояния
+      if (isMountedRef.current && !signal?.aborted) {
+        setWeekDays(days);
+      }
+    } catch (error: any) {
+      // 🔧 ИСПРАВЛЕНИЕ: Не логируем ошибки отмененных запросов
+      if (error?.name !== 'AbortError') {
+        console.error("❌ Ошибка загрузки расписания:", error);
+      }
     }
-  };
+  }, [offset, apiKey, viewedUserId]); // Правильные зависимости
 
+  // 🔧 ИСПРАВЛЕНИЕ: Основной эффект для загрузки данных с AbortController
   useEffect(() => {
-    loadSchedule();
-  }, [offset, apiKey, viewedUserId]);
+    // Отменяем предыдущий запрос, если он существует
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
 
-  useEffect(() => {
-    const refreshData = async () => { 
-      await loadSchedule();
+    // Создаем новый AbortController для этого запроса
+    abortControllerRef.current = new AbortController();
+    
+    // Загружаем данные с возможностью отмены
+    loadSchedule(abortControllerRef.current.signal);
+
+    // Cleanup функция
+    return () => {
+      // Отменяем запрос при размонтировании или изменении зависимостей
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+      }
     };
-    
+  }, [loadSchedule]); // loadSchedule теперь стабильна благодаря useCallback
+
+  // 🔧 ИСПРАВЛЕНИЕ: Отдельный эффект для polling с правильными зависимостями
+  useEffect(() => {
+    // Функция для polling, которая проверяет mounted состояние
+    const pollData = () => {
+      if (isMountedRef.current) {
+        // Создаем отдельный AbortController для polling запроса
+        const pollAbortController = new AbortController();
+        loadSchedule(pollAbortController.signal);
+        
+        // Сохраняем ссылку для возможной отмены
+        return pollAbortController;
+      }
+      return null;
+    };
+
+    let pollAbortController: AbortController | null = null;
+
     if (!isOwner) {
-      pollingIntervalRef.current = setInterval(refreshData, 5000);
+      // Запускаем polling только для не-владельцев
+      pollingIntervalRef.current = setInterval(() => {
+        // Отменяем предыдущий polling запрос, если он еще выполняется
+        if (pollAbortController) {
+          pollAbortController.abort();
+        }
+        pollAbortController = pollData();
+      }, POLLING_INTERVAL);
+
+      devLog('📡 Polling started');
     }
-    
+
+    // Cleanup функция
     return () => {
       if (pollingIntervalRef.current) {
         clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+        devLog('📡 Polling stopped');
+      }
+      if (pollAbortController) {
+        pollAbortController.abort();
       }
     };
-  }, [isOwner]);
+  }, [isOwner, loadSchedule]); // Правильные зависимости
 
+  // 🔧 ИСПРАВЛЕНИЕ: Эффект для отслеживания mounted состояния
   useEffect(() => {
-    setWeekDays(initialWeekDays);
-    setLoading(false);
-  }, [initialWeekDays]);
+    isMountedRef.current = true;
+    
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
-  const navigate = (newOffset: number) => {
+  // 🔧 ИСПРАВЛЕНИЕ: Предотвращаем race condition при навигации
+  const navigate = useCallback((newOffset: number) => {
     if (loading) return;
+    
+    // Отменяем текущие запросы перед навигацией
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    
     setLoading(true);
+    setOffset(newOffset); // Обновляем offset, что триггерит useEffect
+    
     const params = new URLSearchParams(searchParams.toString());
     router.push(`/schedule/${newOffset}?${params.toString()}`);
-  };
+  }, [loading, router, searchParams]);
 
+  // 🔧 ИСПРАВЛЕНИЕ: Обновленный handleLogout с проверкой mounted
   const handleLogout = async () => {
-    await fetch('/api/auth/logout', { 
-      method: 'POST',
-      headers: { Authorization: `Bearer ${apiKey}` }
-    });
-    localStorage.removeItem('apiKey');
-    window.location.href = '/auth';
+    try {
+      await fetch('/api/auth/logout', { 
+        method: 'POST',
+        headers: { Authorization: `Bearer ${apiKey}` }
+      });
+      localStorage.removeItem('apiKey');
+      
+      if (isMountedRef.current) {
+        window.location.href = '/auth';
+      }
+    } catch (error) {
+      console.error('Logout error:', error);
+    }
   };
 
-  const refreshData = async () => {
+  // 🔧 ИСПРАВЛЕНИЕ: Улучшенная функция обновления с AbortController
+  const refreshData = useCallback(async () => {
+    if (!isMountedRef.current) return;
+    
     setLoading(true);
-    await loadSchedule();
-    setLoading(false);
-  };
+    
+    // Создаем новый AbortController для refresh запроса
+    const refreshAbortController = new AbortController();
+    
+    try {
+      await loadSchedule(refreshAbortController.signal);
+    } finally {
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
+    }
+    
+    return () => {
+      refreshAbortController.abort();
+    };
+  }, [loadSchedule]);
 
-  const handleAddSlot = (day: Day) => {
-    console.log('handleAddSlot called for day:', day.formattedDate);
+  // Handlers остаются похожими, но с добавлением проверок mounted
+  const handleAddSlot = useCallback((day: Day) => {
+    devLog('handleAddSlot called for day:', day.formattedDate);
     setSelectedDay(day);
     setIsModalOpen(true);
-  };
+  }, []);
   
-  // ДОБАВЛЕНО: Обработчик редактирования слота
-  const handleEditSlot = (day: Day, slot: TimeSlot) => {
-    console.log('handleEditSlot called for slot:', slot);
+  const handleEditSlot = useCallback((day: Day, slot: TimeSlot) => {
+    devLog('handleEditSlot called for slot:', slot);
     setEditingSlot({ day, slot });
     setIsEditModalOpen(true);
-  };
+  }, []);
   
-  // ИЗМЕНЕНО: Обновленный обработчик для модального окна
+  // 🔧 ИСПРАВЛЕНИЕ: handleModalDone с проверками mounted состояния
   const handleModalDone = async (startTime: string, endTime: string) => {
+    if (!isMountedRef.current) return;
+    
     setLoading(true);
     
     try {
-      // Если редактируем существующий слот
       if (editingSlot) {
-        console.log('📝 Editing slot:', editingSlot.slot.id);
+        devLog('📝 Editing slot:', editingSlot.slot.id);
         
         const res = await fetch('/api/slots', {
           method: 'PATCH',
@@ -238,8 +341,7 @@ export default function ScheduleClientComponent({
         });
         
         const responseText = await res.text();
-        console.log('📥 Edit response status:', res.status);
-        console.log('📥 Edit response text:', responseText);
+        devLog('📥 Edit response status:', res.status);
         
         let responseData;
         try {
@@ -253,11 +355,9 @@ export default function ScheduleClientComponent({
           throw new Error(responseData.error || 'Не удалось обновить слот');
         }
         
-        console.log('✅ Slot updated successfully');
-      } 
-      // Если создаем новый слот
-      else if (selectedDay) {
-        console.log('➕ Creating new slot');
+        devLog('✅ Slot updated successfully');
+      } else if (selectedDay) {
+        devLog('➕ Creating new slot');
         
         const dateStr = format(selectedDay.date, 'yyyy-MM-dd');
         const requestBody = { 
@@ -267,7 +367,7 @@ export default function ScheduleClientComponent({
           assignToSelf: isOwner
         };
         
-        console.log('📤 Creating slot with data:', requestBody);
+        devLog('📤 Creating slot with data:', requestBody);
         
         const res = await fetch('/api/shifts', {
           method: 'POST',
@@ -279,8 +379,7 @@ export default function ScheduleClientComponent({
         });
         
         const responseText = await res.text();
-        console.log('📥 Response status:', res.status);
-        console.log('📥 Response text:', responseText);
+        devLog('📥 Response status:', res.status);
         
         let responseData;
         try {
@@ -294,25 +393,35 @@ export default function ScheduleClientComponent({
           throw new Error(responseData.error || 'Не удалось создать слот');
         }
         
-        console.log('✅ Slot created successfully');
+        devLog('✅ Slot created successfully');
       }
       
-      await refreshData();
-      console.log('✅ Data refreshed');
+      // Проверяем mounted перед обновлением
+      if (isMountedRef.current) {
+        await refreshData();
+        devLog('✅ Data refreshed');
+      }
       
     } catch (err) {
-      console.error('❌ Error:', err);
-      alert(getErrorMessage(err)); 
+      const errorMessage = getErrorMessage(err);
+      if (errorMessage && isMountedRef.current) {
+        alert(errorMessage);
+      }
     } finally {
-      setIsModalOpen(false);
-      setIsEditModalOpen(false);
-      setSelectedDay(null);
-      setEditingSlot(null);
-      setLoading(false);
+      if (isMountedRef.current) {
+        setIsModalOpen(false);
+        setIsEditModalOpen(false);
+        setSelectedDay(null);
+        setEditingSlot(null);
+        setLoading(false);
+      }
     }
   };
 
+  // 🔧 ИСПРАВЛЕНИЕ: Остальные handlers с проверками mounted
   const handleTakeSlot = async (day: Day, slot: TimeSlot) => {
+    if (!isMountedRef.current) return;
+    
     setLoading(true);
     try {
       const res = await fetch('/api/slots', {
@@ -323,17 +432,30 @@ export default function ScheduleClientComponent({
           },
           body: JSON.stringify({ slotId: slot.id })
       });
-      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось занять слот');
-      await refreshData();
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Не удалось занять слот');
+      }
+      
+      if (isMountedRef.current) {
+        await refreshData();
+      }
     } catch (err) {
-      alert(getErrorMessage(err)); 
+      const errorMessage = getErrorMessage(err);
+      if (errorMessage && isMountedRef.current) {
+        alert(errorMessage);
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
   
   const handleDeleteSlot = async (day: Day, slotId: number) => {
     if (!confirm(`Вы уверены, что хотите навсегда удалить этот слот?`)) return;
+    if (!isMountedRef.current) return;
 
     setLoading(true);
     try {
@@ -342,18 +464,31 @@ export default function ScheduleClientComponent({
         headers: { Authorization: `Bearer ${apiKey}` },
         cache: 'no-store' 
       });
-      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось удалить слот');
-      await refreshData();
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Не удалось удалить слот');
+      }
+      
+      if (isMountedRef.current) {
+        await refreshData();
+      }
     } catch (err) {
-      alert(getErrorMessage(err));
+      const errorMessage = getErrorMessage(err);
+      if (errorMessage && isMountedRef.current) {
+        alert(errorMessage);
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
   const handleDeleteDaySlots = async (day: Day) => {
     const confirmationText = `Вы уверены, что хотите очистить день ${day.formattedDate}?\n\nБудут удалены все свободные слоты, а ваши занятые слоты станут свободными.`;
     if (!confirm(confirmationText)) return;
+    if (!isMountedRef.current) return;
 
     setLoading(true);
     try {
@@ -363,12 +498,24 @@ export default function ScheduleClientComponent({
         headers: { Authorization: `Bearer ${apiKey}` },
         cache: 'no-store'
       });
-      if (!res.ok) throw new Error((await res.json()).error || 'Не удалось очистить день');
-      await refreshData();
+      
+      if (!res.ok) {
+        const data = await res.json();
+        throw new Error(data.error || 'Не удалось очистить день');
+      }
+      
+      if (isMountedRef.current) {
+        await refreshData();
+      }
     } catch (err) {
-      alert(getErrorMessage(err)); 
+      const errorMessage = getErrorMessage(err);
+      if (errorMessage && isMountedRef.current) {
+        alert(errorMessage);
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -377,7 +524,15 @@ export default function ScheduleClientComponent({
     ? `${format(mainWeek[0].date, 'd MMM')} - ${format(mainWeek[6].date, 'd MMM')}`
     : `${format(nextWeek[0].date, 'd MMM')} - ${format(nextWeek[6].date, 'd MMM')}`;
 
-  console.log('ScheduleClientComponent - isOwner:', isOwner, 'viewedUserId:', viewedUserId);
+  devLog('ScheduleClientComponent - isOwner:', isOwner, 'viewedUserId:', viewedUserId);
+
+  // Эффект для синхронизации с initial данными (на случай изменения извне)
+  useEffect(() => {
+    if (initialWeekDays && initialWeekDays.length > 0) {
+      setWeekDays(initialWeekDays);
+      setLoading(false);
+    }
+  }, [initialWeekDays]);
 
   return (
     <>
@@ -398,7 +553,7 @@ export default function ScheduleClientComponent({
           currentUserId={currentUser?.id || null}
           isOwner={isOwner}
           onAddSlot={handleAddSlot}
-          onEditSlot={handleEditSlot} // ДОБАВЛЕНО: передаем функцию редактирования
+          onEditSlot={handleEditSlot}
           onTakeSlot={handleTakeSlot}
           onDeleteSlot={handleDeleteSlot}
           onDeleteDaySlots={handleDeleteDaySlots}
@@ -407,7 +562,7 @@ export default function ScheduleClientComponent({
             isOwner={isOwner}
             onAddSlotClick={() => {
               const todayDay = weekDays.find(d => d.isToday) || weekDays[0];
-              console.log('Lower button clicked, adding slot for:', todayDay?.formattedDate);
+              devLog('Lower button clicked, adding slot for:', todayDay?.formattedDate);
               handleAddSlot(todayDay);
             }}
         />
@@ -424,7 +579,7 @@ export default function ScheduleClientComponent({
         />
       )}
       
-      {/* ДОБАВЛЕНО: Модальное окно для редактирования слота */}
+      {/* Модальное окно для редактирования слота */}
       {isEditModalOpen && editingSlot && (
         <AddSlotModal
           onClose={() => {

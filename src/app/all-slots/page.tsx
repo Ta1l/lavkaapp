@@ -90,16 +90,26 @@ export default function AllSlotsPage() {
                 </button>
             </div>
 
-            {/* Контент страницы */}
-            <div className="container mx-auto p-4 mt-8">
-                <div className="text-gray-400 text-center">
+            {/* Подложка для слотов */}
+            <div className="mt-[106px] mx-[19px] rounded-[20px] bg-[#577C93] min-h-[400px] p-6">
+                <div className="text-white text-center">
                     {weekDays.length > 0 && (
-                        <div className="mb-4 text-sm">
+                        <div className="mb-4 text-sm opacity-80">
                             Отображение слотов для: {format(weekDays[currentDayIndex].date, "dd.MM.yyyy")}
                         </div>
                     )}
-                    <div>
-                        Здесь будут отображаться слоты всех пользователей
+                    
+                    {/* Временный контент для демонстрации */}
+                    <div className="space-y-4 mt-8">
+                        <div className="bg-white/10 rounded-lg p-4">
+                            <p className="text-left">Слот 1: 09:00 - 12:00</p>
+                        </div>
+                        <div className="bg-white/10 rounded-lg p-4">
+                            <p className="text-left">Слот 2: 14:00 - 18:00</p>
+                        </div>
+                        <div className="bg-white/10 rounded-lg p-4">
+                            <p className="text-left">Слот 3: 19:00 - 22:00</p>
+                        </div>
                     </div>
                 </div>
             </div>

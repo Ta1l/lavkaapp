@@ -91,8 +91,13 @@ export default function AllSlotsPage() {
             </div>
 
             {/* Подложка для слотов */}
-            <div className="mt-[106px] mx-[19px] rounded-[20px] bg-[#577C93] min-h-[400px] p-6">
-                <div className="text-white text-center">
+            <div className="mt-[50px] mx-[19px] rounded-[20px] bg-[#577C93] min-h-[400px] pt-[8px] pl-[15px] pr-6 pb-6">
+                {/* Никнейм */}
+                <p className="text-white font-['Inter'] text-[20px] font-normal leading-normal">
+                    Gleb
+                </p>
+                
+                <div className="text-white text-center mt-4">
                     {weekDays.length > 0 && (
                         <div className="mb-4 text-sm opacity-80">
                             Отображение слотов для: {format(weekDays[currentDayIndex].date, "dd.MM.yyyy")}

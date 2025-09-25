@@ -30,14 +30,14 @@ const Lower: React.FC<LowerProps> = ({ onAddSlotClick, isOwner }) => {
                 </Link>
             )}
 
-            {/* Кнопка "Все слоты" - показывается только для владельца расписания */}
+            {/* Кнопка "Добавить слоты" - показывается только для владельца расписания */}
             {isOwner && (
-                <Link
-                    href="/all-slots"
-                    className="absolute right-[17px] top-[9px] w-[145px] h-[37px] bg-[#ffed23] rounded-[8px] text-black text-[14px] font-sans font-normal leading-none active:scale-95 transition-transform duration-80 flex items-center justify-center"
+                <button
+                    onClick={onAddSlotClick}
+                    className="absolute right-[17px] top-[9px] w-[145px] h-[37px] bg-[#ffed23] rounded-[8px] text-black text-[14px] font-sans font-normal leading-none active:scale-95 transition-transform duration-80"
                 >
-                    Все слоты
-                </Link>
+                    Добавить слоты
+                </button>
             )}
         </footer>
     );

@@ -2,20 +2,49 @@
 
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { format } from "date-fns";
+import { ru } from "date-fns/locale";
+import { getCalendarWeeks } from "@/lib/dateUtils";
 
 export default function AllSlotsPage() {
-    const [currentDay, setCurrentDay] = useState("Понедельник, 22 сентября");
+    const [currentDayIndex, setCurrentDayIndex] = useState(0); // 0 = понедельник, 6 = воскресенье
+    const [weekDays, setWeekDays] = useState<Array<{ date: Date; formattedDate: string }>>([]);
+
+    useEffect(() => {
+        // Получаем текущую неделю
+        const { mainWeek } = getCalendarWeeks(new Date());
+        setWeekDays(mainWeek);
+    }, []);
 
     const handlePrevDay = () => {
-        // Логика для переключения на предыдущий день
-        console.log("Previous day");
+        if (currentDayIndex > 0) {
+            setCurrentDayIndex(currentDayIndex - 1);
+        }
     };
 
     const handleNextDay = () => {
-        // Логика для переключения на следующий день
-        console.log("Next day");
+        if (currentDayIndex < 6) {
+            setCurrentDayIndex(currentDayIndex + 1);
+        }
     };
+
+    // Форматируем текущий день
+    const getCurrentDayText = () => {
+        if (weekDays.length === 0) return "";
+        
+        const currentDay = weekDays[currentDayIndex];
+        const dayName = format(currentDay.date, "EEEE", { locale: ru });
+        const formattedDate = format(currentDay.date, "d MMMM", { locale: ru });
+        
+        // Делаем первую букву заглавной
+        const capitalizedDayName = dayName.charAt(0).toUpperCase() + dayName.slice(1);
+        
+        return `${capitalizedDayName}, ${formattedDate}`;
+    };
+
+    const isPrevDisabled = currentDayIndex === 0;
+    const isNextDisabled = currentDayIndex === 6;
 
     return (
         <div className="min-h-screen bg-black text-white">
@@ -24,7 +53,12 @@ export default function AllSlotsPage() {
                 {/* Кнопка влево */}
                 <button
                     onClick={handlePrevDay}
-                    className="absolute left-[14px] top-[43px] w-[25px] h-[25px] active:scale-95 transition-transform"
+                    disabled={isPrevDisabled}
+                    className={`absolute left-[14px] top-[43px] w-[25px] h-[25px] transition-all ${
+                        isPrevDisabled 
+                            ? 'opacity-50 cursor-not-allowed' 
+                            : 'active:scale-95 cursor-pointer hover:opacity-80'
+                    }`}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 25 25" fill="none">
                         <circle cx="12.5" cy="12.5" r="12.5" fill="#353333"/>
@@ -34,15 +68,20 @@ export default function AllSlotsPage() {
 
                 {/* Поле с днем недели */}
                 <div className="mx-auto w-[246px] h-[27px] rounded-[20px] bg-[#353333] flex items-center justify-center">
-                    <span className="text-white text-[14px] font-normal font-['Inter'] leading-normal">
-                        {currentDay}
+                    <span className="text-white text-[14px] font-normal font-['Jura'] leading-normal">
+                        {getCurrentDayText()}
                     </span>
                 </div>
 
                 {/* Кнопка вправо */}
                 <button
                     onClick={handleNextDay}
-                    className="absolute right-[14px] top-[43px] w-[25px] h-[25px] active:scale-95 transition-transform"
+                    disabled={isNextDisabled}
+                    className={`absolute right-[14px] top-[43px] w-[25px] h-[25px] transition-all ${
+                        isNextDisabled 
+                            ? 'opacity-50 cursor-not-allowed' 
+                            : 'active:scale-95 cursor-pointer hover:opacity-80'
+                    }`}
                 >
                     <svg xmlns="http://www.w3.org/2000/svg" width="25" height="25" viewBox="0 0 25 25" fill="none">
                         <circle cx="12.5" cy="12.5" r="12.5" fill="#353333"/>
@@ -54,7 +93,14 @@ export default function AllSlotsPage() {
             {/* Контент страницы */}
             <div className="container mx-auto p-4 mt-8">
                 <div className="text-gray-400 text-center">
-                    Здесь будут отображаться слоты всех пользователей
+                    {weekDays.length > 0 && (
+                        <div className="mb-4 text-sm">
+                            Отображение слотов для: {format(weekDays[currentDayIndex].date, "dd.MM.yyyy")}
+                        </div>
+                    )}
+                    <div>
+                        Здесь будут отображаться слоты всех пользователей
+                    </div>
                 </div>
             </div>
         </div>

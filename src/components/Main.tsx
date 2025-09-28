@@ -47,20 +47,20 @@ function DayRow({
     // Рассчитываем высоту динамически
     const calculateHeight = (count: number) => {
         if (count === 0) return 50;
-        // 33px (отступ сверху) + количество слотов * (35px высота + 6px промежуток) + 10px отступ снизу
-        return 33 + (count * 41) + 10;
+        // 21px (заголовок + отступ) + количество слотов * (35px высота + 6px промежуток) + 15px отступ снизу
+        return 21 + (count * 41) + 15;
     };
 
     return (
         <div 
-            className="w-full relative transition-all duration-300 border-b border-gray-800 last:border-b-0"
+            className="w-full relative transition-all duration-300 rounded-[20px] bg-[#FFEA00] mb-[19px] last:mb-0"
             style={{ minHeight: `${calculateHeight(slotsCount)}px` }}
         >
             <p className={clsx(
-                "absolute top-0 left-[9px] text-[14px] font-normal font-sans leading-normal transition-colors",
+                "absolute top-[10px] left-[15px] text-[14px] font-normal font-sans leading-normal transition-colors",
                 { 
-                    "text-[#FDF277] font-semibold": day.isToday, 
-                    "text-white": !day.isToday 
+                    "text-black font-bold": day.isToday, 
+                    "text-black": !day.isToday 
                 }
             )}>
                 {day.formattedDate}
@@ -68,13 +68,13 @@ function DayRow({
 
             {/* Кнопки управления днем - показываем только для владельца */}
             {isOwner && (
-                <div className="absolute top-0 right-[10px] flex items-center gap-2 z-20">
+                <div className="absolute top-[10px] right-[15px] flex items-center gap-2 z-20">
                     <button
                         onClick={(e) => {
                             e.stopPropagation();
                             onAddSlot(day);
                         }}
-                        className="flex items-center justify-center w-7 h-7 rounded-full bg-[#353333] hover:bg-green-600 transition-all duration-200 shadow-md"
+                        className="flex items-center justify-center w-7 h-7 rounded-full bg-black/20 hover:bg-green-600 transition-all duration-200 shadow-md"
                         title="Добавить слот"
                     >
                         <svg 
@@ -101,7 +101,7 @@ function DayRow({
                                 onDeleteDaySlots(day);
                             }
                         }}
-                        className="flex items-center justify-center w-7 h-7 rounded-full bg-[#353333] hover:bg-red-600 transition-all duration-200 shadow-md"
+                        className="flex items-center justify-center w-7 h-7 rounded-full bg-black/20 hover:bg-red-600 transition-all duration-200 shadow-md"
                         title="Удалить все слоты дня"
                     >
                         <svg 
@@ -124,11 +124,11 @@ function DayRow({
             )}
 
             {slotsCount === 0 ? (
-                <p className="absolute top-[21px] left-[10px] text-[#595757] text-[10px] font-normal font-sans leading-none">
+                <p className="absolute top-[31px] left-[15px] text-black/50 text-[10px] font-normal font-sans leading-none">
                     Нет запланированных слотов
                 </p>
             ) : (
-                <div className="absolute top-[33px] left-[10px] right-[10px] flex flex-col gap-[6px]">
+                <div className="absolute top-[41px] left-[15px] right-[15px] flex flex-col gap-[6px]">
                     {slots.map((slot) => (
                         <TimeSlotComponent
                             key={slot.id}
@@ -182,10 +182,10 @@ export default function Main({
     if (isLoading) {
         return (
             <main className="container mx-auto bg-black rounded-lg w-full animate-pulse">
-                <div className="flex flex-col pt-2">
+                <div className="flex flex-col pt-2 px-3">
                     {[...Array(7)].map((_, i) => (
-                        <div key={i} className="relative border-b border-gray-800 last:border-b-0" style={{ minHeight: '50px' }}>
-                            <div className="absolute top-1 left-2 h-4 bg-gray-700 rounded w-1/3"></div>
+                        <div key={i} className="relative rounded-[20px] bg-gray-700 mb-[19px] last:mb-0" style={{ minHeight: '50px' }}>
+                            <div className="absolute top-[10px] left-[15px] h-4 bg-gray-600 rounded w-1/3"></div>
                         </div>
                     ))}
                 </div>
@@ -199,7 +199,7 @@ export default function Main({
             className="container mx-auto bg-black rounded-lg w-full overflow-y-auto" 
             style={{ height: 'calc(100vh - 180px)' }}
         >
-            <div className="flex flex-col pt-2">
+            <div className="flex flex-col pt-2 px-3 pb-3">
                 {weekDays.length > 0 ? (
                     weekDays.map((day) => (
                         <DayRow

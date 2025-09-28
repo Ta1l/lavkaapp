@@ -53,9 +53,10 @@ export default function TimeSlotComponent({
             className={clsx(
                 "w-full h-[35px] rounded-[20px] flex items-center justify-between px-3 transition-all duration-200 relative",
                 {
-                    "bg-[#FFEA00]": isSlotAvailable,
-                    "cursor-pointer hover:bg-[#e6d400]": canBeTaken || canEdit,
-                    "bg-gray-700": isSlotTaken,
+                    "bg-[#353333]": isSlotAvailable,
+                    "cursor-pointer hover:bg-[#4a4848]": canBeTaken,
+                    "bg-[#FFEA00]": isSlotTaken,
+                    "cursor-pointer hover:bg-[#e6d400]": canEdit && isSlotTaken,
                     "cursor-default": !canBeTaken && !canEdit,
                 }
             )}
@@ -70,8 +71,8 @@ export default function TimeSlotComponent({
                 <div className={clsx(
                     "text-center font-sans text-[14px] leading-normal",
                     {
-                        "text-black font-bold": isSlotAvailable,
-                        "text-white": isSlotTaken,
+                        "text-white": isSlotAvailable,
+                        "text-black font-bold": isSlotTaken,
                     }
                 )}>
                     {`${slot.startTime} - ${slot.endTime}`}
@@ -83,8 +84,8 @@ export default function TimeSlotComponent({
                         className={clsx(
                             "w-4 h-4",
                             {
-                                "text-black/60": isSlotAvailable,
-                                "text-gray-400": isSlotTaken,
+                                "text-gray-400": isSlotAvailable,
+                                "text-black/60": isSlotTaken,
                             }
                         )}
                         fill="none" 
@@ -102,7 +103,7 @@ export default function TimeSlotComponent({
             </div>
             
             {isTakenByOther && slot.userName && (
-                <div className="text-gray-300 text-xs font-light truncate max-w-[50%]">
+                <div className="text-black/70 text-xs font-light truncate max-w-[50%]">
                     {slot.userName}
                 </div>
             )}
@@ -116,7 +117,7 @@ export default function TimeSlotComponent({
                             onDeleteSlot(day, slot.id);
                         }
                     }}
-                    className="p-1 rounded-full text-gray-400 hover:text-white hover:bg-red-600 active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                    className="p-1 rounded-full text-black/60 hover:text-white hover:bg-red-600 active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
                     title="Удалить слот"
                 >
                     <svg

@@ -53,8 +53,8 @@ export default function TimeSlotComponent({
             className={clsx(
                 "w-full h-[35px] rounded-[20px] flex items-center justify-between px-3 transition-all duration-200 relative",
                 {
-                    "bg-[#353333]": isSlotAvailable,
-                    "cursor-pointer hover:bg-[#4a4848]": canBeTaken || canEdit,
+                    "bg-[#FFEA00]": isSlotAvailable,
+                    "cursor-pointer hover:bg-[#e6d400]": canBeTaken || canEdit,
                     "bg-gray-700": isSlotTaken,
                     "cursor-default": !canBeTaken && !canEdit,
                 }
@@ -67,14 +67,26 @@ export default function TimeSlotComponent({
             }
         >
             <div className="flex items-center gap-2">
-                <div className="text-white text-center font-sans text-[14px]">
+                <div className={clsx(
+                    "text-center font-sans text-[14px] leading-normal",
+                    {
+                        "text-black font-bold": isSlotAvailable,
+                        "text-white": isSlotTaken,
+                    }
+                )}>
                     {`${slot.startTime} - ${slot.endTime}`}
                 </div>
                 
                 {/* Иконка редактирования для владельца */}
                 {canEdit && (
                     <svg 
-                        className="w-4 h-4 text-gray-400"
+                        className={clsx(
+                            "w-4 h-4",
+                            {
+                                "text-black/60": isSlotAvailable,
+                                "text-gray-400": isSlotTaken,
+                            }
+                        )}
                         fill="none" 
                         stroke="currentColor" 
                         viewBox="0 0 24 24"

@@ -55,8 +55,8 @@ export default function TimeSlotComponent({
                 {
                     "bg-[#353333]": isSlotAvailable,
                     "cursor-pointer hover:bg-[#4a4848]": canBeTaken,
-                    "bg-[#FFEA00]": isSlotTaken,
-                    "cursor-pointer hover:bg-[#e6d400]": canEdit && isSlotTaken,
+                    "bg-[#000]": isSlotTaken,
+                    "cursor-pointer hover:bg-[#333]": canEdit && isSlotTaken,
                     "cursor-default": !canBeTaken && !canEdit,
                 }
             )}
@@ -72,7 +72,7 @@ export default function TimeSlotComponent({
                     "text-center font-sans text-[14px] leading-normal",
                     {
                         "text-white": isSlotAvailable,
-                        "text-black font-bold": isSlotTaken,
+                        "text-white font-bold": isSlotTaken,
                     }
                 )}>
                     {`${slot.startTime} - ${slot.endTime}`}
@@ -85,7 +85,7 @@ export default function TimeSlotComponent({
                             "w-4 h-4",
                             {
                                 "text-gray-400": isSlotAvailable,
-                                "text-black/60": isSlotTaken,
+                                "text-white/60": isSlotTaken,
                             }
                         )}
                         fill="none" 
@@ -103,7 +103,7 @@ export default function TimeSlotComponent({
             </div>
             
             {isTakenByOther && slot.userName && (
-                <div className="text-black/70 text-xs font-light truncate max-w-[50%]">
+                <div className="text-white/70 text-xs font-light truncate max-w-[50%]">
                     {slot.userName}
                 </div>
             )}
@@ -117,7 +117,7 @@ export default function TimeSlotComponent({
                             onDeleteSlot(day, slot.id);
                         }
                     }}
-                    className="p-1 rounded-full text-black/60 hover:text-white hover:bg-red-600 active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
+                    className="p-1 rounded-full text-white/60 hover:text-white hover:bg-red-600 active:scale-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-red-500"
                     title="Удалить слот"
                 >
                     <svg

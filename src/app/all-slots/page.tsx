@@ -134,7 +134,7 @@ export default function AllSlotsPage() {
         }
     };
 
-    // Swipe handlers только для навигации по дням
+    // Swipe handlers для навигации по дням
     const swipeHandlers: SwipeableHandlers = useSwipeable({
         onSwipedLeft: () => {
             if (!isNextDisabled) {
@@ -146,9 +146,9 @@ export default function AllSlotsPage() {
                 handlePrevDay();
             }
         },
-        preventScrollOnSwipe: false, // Изменено на false для разрешения вертикальной прокрутки
+        preventScrollOnSwipe: true,
         trackMouse: false,
-        delta: 50, // Увеличено для лучшего различения между свайпом и скроллом
+        delta: 30,
     });
 
     const getCurrentDayText = () => {
@@ -174,9 +174,9 @@ export default function AllSlotsPage() {
     };
 
     return (
-        <div className="h-screen bg-black text-white flex flex-col relative">
+        <div className="h-screen bg-black text-white flex flex-col relative" {...swipeHandlers}>
             {/* Навигация по дням - фиксированная */}
-            <div className="relative w-full pt-[43px] pb-[20px] flex-shrink-0" {...swipeHandlers}>
+            <div className="relative w-full pt-[43px] pb-[20px] flex-shrink-0">
                 {/* Кнопка влево */}
                 <button
                     onClick={handlePrevDay}

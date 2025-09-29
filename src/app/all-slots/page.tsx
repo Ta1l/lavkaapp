@@ -11,7 +11,7 @@ import TimeSlotComponent from "@/components/TimeSlotComponent";
 
 export default function AllSlotsPage() {
     const [currentDayIndex, setCurrentDayIndex] = useState(0); // 0 = понедельник, 6 = воскресенье
-    const [weekDays, setWeekDays] = useState<Array<{ date: Date; formattedDate: string }>>([]);
+    const [weekDays, setWeekDays] = useState<Day[]>([]);
 
     useEffect(() => {
         // Получаем текущую неделю

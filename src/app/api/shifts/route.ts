@@ -66,6 +66,7 @@ export async function GET(request: NextRequest) {
     const viewedUserIdParam = url.searchParams.get('userId');
     const startParam = url.searchParams.get('start');
     const endParam = url.searchParams.get('end');
+    const allUsersParam = url.searchParams.get('allUsers'); // ДОБАВЛЕНО: параметр для получения всех слотов
 
     const startStr = startParam ? normalizeDateString(startParam) : null;
     const endStr = endParam ? normalizeDateString(endParam) : null;
@@ -90,25 +91,30 @@ export async function GET(request: NextRequest) {
       where.push(`s.shift_date < $${params.length}`);
     }
     
-    // Если указан конкретный userId - показываем только его слоты
-    if (viewedUserIdParam) {
-      params.push(parseInt(viewedUserIdParam, 10));
-      where.push(`s.user_id = $${params.length}`);
-    } 
-    // Если текущий пользователь авторизован - показываем его слоты и доступные
-    else if (currentUser) {
-      params.push(currentUser.id);
-      where.push(`(s.user_id = $${params.length} OR s.status = 'available')`);
-    }
-    // Для неавторизованных - только доступные слоты
-    else {
-      where.push(`s.status = 'available'`);
+    // ИЗМЕНЕНО: Добавлена проверка параметра allUsers
+    if (allUsersParam === 'true') {
+      // Если allUsers=true, показываем ВСЕ занятые слоты (не показываем свободные)
+      where.push(`s.user_id IS NOT NULL`);
+      console.log('[GET /api/shifts] Getting all users slots');
+    } else {
+      // Стандартная логика фильтрации
+      if (viewedUserIdParam) {
+        params.push(parseInt(viewedUserIdParam, 10));
+        where.push(`s.user_id = $${params.length}`);
+      } 
+      else if (currentUser) {
+        params.push(currentUser.id);
+        where.push(`(s.user_id = $${params.length} OR s.status = 'available')`);
+      }
+      else {
+        where.push(`s.status = 'available'`);
+      }
     }
 
     if (where.length) {
       query += ' WHERE ' + where.join(' AND ');
     }
-    query += ' ORDER BY s.shift_date, s.shift_code';
+    query += ' ORDER BY s.shift_date, s.shift_code, s.user_id'; // ИЗМЕНЕНО: добавлена сортировка по user_id
     
     const result = await pool.query(query, params);
     const rows = result.rows.map(row => ({

@@ -48,25 +48,27 @@ export default function AllSlotsPage() {
             const currentDate = format(weekDays[currentDayIndex].date, "yyyy-MM-dd");
             const nextDate = format(new Date(weekDays[currentDayIndex].date.getTime() + 24 * 60 * 60 * 1000), "yyyy-MM-dd");
             
-            // Загружаем все слоты на выбранный день
-            const res = await fetch(`/api/shifts?start=${currentDate}&end=${nextDate}`, {
+            // ВАЖНО: Добавляем параметр allUsers=true для получения слотов ВСЕХ пользователей
+            const res = await fetch(`/api/shifts?start=${currentDate}&end=${nextDate}&allUsers=true`, {
                 headers: { 
                     Authorization: `Bearer ${apiKey}` 
                 },
             });
             
             if (!res.ok) {
-                console.error("Ошибка загрузки слотов");
+                console.error("Ошибка загрузки слотов:", res.status);
                 return;
             }
 
             const data = await res.json();
+            console.log("Загруженные слоты:", data); // Для отладки
             
             // Группируем слоты по пользователям
             const groupedSlots = new Map<number, UserSlots>();
             
             data.forEach((shift: any) => {
-                if (shift.user_id && shift.status !== "cancelled") {
+                // Включаем ВСЕ занятые слоты (не только доступные)
+                if (shift.user_id) {
                     const [startTime, endTime] = shift.shift_code?.split("-") || ["", ""];
                     
                     const slot: TimeSlot = {
@@ -75,7 +77,7 @@ export default function AllSlotsPage() {
                         endTime: endTime.trim(),
                         status: shift.status as any,
                         user_id: shift.user_id,
-                        userName: shift.username || `user${shift.user_id}`
+                        userName: shift.username || shift.full_name || `user${shift.user_id}`
                     };
 
                     if (!groupedSlots.has(shift.user_id)) {
@@ -94,6 +96,12 @@ export default function AllSlotsPage() {
             const sortedUserSlots = Array.from(groupedSlots.values())
                 .sort((a, b) => a.userId - b.userId);
             
+            // Сортируем слоты внутри каждого пользователя по времени
+            sortedUserSlots.forEach(user => {
+                user.slots.sort((a, b) => a.startTime.localeCompare(b.startTime));
+            });
+            
+            console.log("Сгруппированные слоты:", sortedUserSlots); // Для отладки
             setUserSlots(sortedUserSlots);
         } catch (error) {
             console.error("Ошибка загрузки данных:", error);
@@ -183,7 +191,7 @@ export default function AllSlotsPage() {
             {/* Карточки пользователей со слотами */}
             <div className="mt-[50px] px-[19px] pb-[20px]">
                 {loading ? (
-                    <div className="text-center text-gray-400">Загрузка...</div>
+                    <div className="text-center text-gray-400 mt-20">Загрузка...</div>
                 ) : userSlots.length > 0 ? (
                     userSlots.map((user, index) => (
                         <div 
@@ -214,8 +222,8 @@ export default function AllSlotsPage() {
                         </div>
                     ))
                 ) : (
-                    <div className="text-center text-gray-400">
-                        Нет слотов на этот день
+                    <div className="text-center text-gray-400 mt-20">
+                        Нет слотов на {getCurrentDayText()}
                     </div>
                 )}
             </div>

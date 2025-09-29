@@ -53,7 +53,7 @@ function DayRow({
 
     return (
         <div 
-            className="w-full relative transition-all duration-300 rounded-[20px] bg-[#FFEA00] mb-[19px] last:mb-0"
+            className="w-full relative transition-all duration-300 rounded-[20px] bg-[#FFEA00] mb-[17px] last:mb-0"
             style={{ minHeight: `${calculateHeight(slotsCount)}px` }}
         >
             <p className="absolute top-[10px] left-[15px] text-[14px] font-bold font-sans leading-normal text-black">
@@ -62,7 +62,7 @@ function DayRow({
 
             {/* Кнопки управления днем - показываем только для владельца */}
             {isOwner && (
-                <div className="absolute top-[8px] right-[15px] flex items-center gap-2 z-20">
+                <div className="absolute top-[7px] right-[15px] flex items-center gap-2 z-20">
                     <button
                         onClick={(e) => {
                             e.stopPropagation();

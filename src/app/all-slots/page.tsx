@@ -134,7 +134,7 @@ export default function AllSlotsPage() {
         }
     };
 
-    // Swipe handlers
+    // Swipe handlers только для навигации по дням
     const swipeHandlers: SwipeableHandlers = useSwipeable({
         onSwipedLeft: () => {
             if (!isNextDisabled) {
@@ -146,9 +146,9 @@ export default function AllSlotsPage() {
                 handlePrevDay();
             }
         },
-        preventScrollOnSwipe: true,
+        preventScrollOnSwipe: false, // Изменено на false для разрешения вертикальной прокрутки
         trackMouse: false,
-        delta: 30, // минимальное расстояние свайпа
+        delta: 50, // Увеличено для лучшего различения между свайпом и скроллом
     });
 
     const getCurrentDayText = () => {
@@ -174,9 +174,9 @@ export default function AllSlotsPage() {
     };
 
     return (
-        <div className="min-h-screen bg-black text-white relative pb-[70px]" {...swipeHandlers}>
-            {/* Навигация по дням */}
-            <div className="relative w-full pt-[43px]">
+        <div className="h-screen bg-black text-white flex flex-col relative">
+            {/* Навигация по дням - фиксированная */}
+            <div className="relative w-full pt-[43px] pb-[20px] flex-shrink-0" {...swipeHandlers}>
                 {/* Кнопка влево */}
                 <button
                     onClick={handlePrevDay}
@@ -217,8 +217,8 @@ export default function AllSlotsPage() {
                 </button>
             </div>
 
-            {/* Карточки пользователей со слотами */}
-            <div className="mt-[50px] px-[19px] pb-[20px]">
+            {/* Прокручиваемая область с карточками */}
+            <div className="flex-1 overflow-y-auto px-[19px] pb-[90px]">
                 {loading ? (
                     <div className="text-center text-gray-400 mt-20">Загрузка...</div>
                 ) : userSlots.length > 0 ? (
@@ -257,8 +257,8 @@ export default function AllSlotsPage() {
                 )}
             </div>
 
-            {/* Footer с кнопкой "Назад" */}
-            <footer className="bg-[#272727] rounded-[20px] w-full h-[54px] fixed bottom-0 left-0 flex items-center justify-center">
+            {/* Footer с кнопкой "Назад" - фиксированный */}
+            <footer className="bg-[#272727] rounded-[20px] w-full h-[54px] fixed bottom-0 left-0 flex items-center justify-center z-10">
                 <Link 
                     href="/schedule/0" 
                     className="absolute left-[17px] top-[9px] w-[145px] h-[37px] bg-[#000] rounded-[8px] text-white text-[14px] font-sans font-normal leading-none active:scale-95 transition-transform duration-80 flex items-center justify-center"

@@ -6,6 +6,8 @@ import { useState, useEffect } from "react";
 import { format } from "date-fns";
 import { ru } from "date-fns/locale";
 import { getCalendarWeeks } from "@/lib/dateUtils";
+import { TimeSlot, Day } from "@/types/shifts";
+import TimeSlotComponent from "@/components/TimeSlotComponent";
 
 export default function AllSlotsPage() {
     const [currentDayIndex, setCurrentDayIndex] = useState(0); // 0 = понедельник, 6 = воскресенье
@@ -45,6 +47,19 @@ export default function AllSlotsPage() {
 
     const isPrevDisabled = currentDayIndex === 0;
     const isNextDisabled = currentDayIndex === 6;
+
+    // Временные данные для демонстрации
+    const mockSlots: TimeSlot[] = [
+        { id: 1, startTime: "09:00", endTime: "12:00", status: "taken", user_id: 5, userName: "egor" },
+        { id: 2, startTime: "14:00", endTime: "18:00", status: "taken", user_id: 5, userName: "egor" },
+    ];
+
+    const currentDay: Day = weekDays[currentDayIndex] || { 
+        date: new Date(), 
+        formattedDate: "", 
+        isToday: false, 
+        slots: [] 
+    };
 
     return (
         <div className="min-h-screen bg-black text-white">
@@ -90,8 +105,31 @@ export default function AllSlotsPage() {
                 </button>
             </div>
 
-            {/* Подложка для слотов */}
-            <div className="mt-[50px] mx-[19px] rounded-[20px] bg-[#577C93] min-h-[400px] pt-[8px] pl-[15px] pr-6 pb-6">
+            {/* Карточка пользователя egor */}
+            <div className="mt-[50px] mx-[19px] rounded-[20px] bg-[#FFEA00]/80 min-h-[100px] pt-[15px] pl-[15px] pr-[15px] pb-[15px]">
+                {/* Никнейм */}
+                <p className="text-black font-['Inter'] text-[16px] font-normal leading-normal mb-[10px]">
+                    egor
+                </p>
+                
+                {/* Слоты */}
+                <div className="flex flex-col gap-[6px]">
+                    {mockSlots.map((slot) => (
+                        <TimeSlotComponent
+                            key={slot.id}
+                            slot={slot}
+                            day={currentDay}
+                            onTakeSlot={() => {}}
+                            onDeleteSlot={() => {}}
+                            currentUserId={null}
+                            isOwner={false}
+                        />
+                    ))}
+                </div>
+            </div>
+
+            {/* Подложка для слотов (оригинальная) */}
+            <div className="mt-[19px] mx-[19px] rounded-[20px] bg-[#577C93] min-h-[400px] pt-[8px] pl-[15px] pr-6 pb-6">
                 {/* Никнейм */}
                 <p className="text-white font-['Inter'] text-[20px] font-normal leading-normal">
                     Gleb

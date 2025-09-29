@@ -53,7 +53,7 @@ function DayRow({
 
     return (
         <div 
-            className="w-full relative transition-all duration-300 rounded-[20px] bg-[#FFEA00] mb-[15px] last:mb-0"
+            className="w-full relative transition-all duration-300 rounded-[20px] bg-[#FFEA00]/90 mb-[15px] last:mb-0"
             style={{ minHeight: `${calculateHeight(slotsCount)}px` }}
         >
             <p className="absolute top-[10px] left-[15px] text-[14px] font-bold font-sans leading-normal text-black">
@@ -178,7 +178,7 @@ export default function Main({
             <main className="container mx-auto bg-black rounded-lg w-full animate-pulse">
                 <div className="flex flex-col pt-2 px-3">
                     {[...Array(7)].map((_, i) => (
-                        <div key={i} className="relative rounded-[20px] bg-gray-700 mb-[19px] last:mb-0" style={{ minHeight: '50px' }}>
+                        <div key={i} className="relative rounded-[20px] bg-gray-700 mb-[15px] last:mb-0" style={{ minHeight: '50px' }}>
                             <div className="absolute top-[10px] left-[15px] h-4 bg-gray-600 rounded w-1/3"></div>
                         </div>
                     ))}

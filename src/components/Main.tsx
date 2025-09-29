@@ -57,10 +57,9 @@ function DayRow({
             style={{ minHeight: `${calculateHeight(slotsCount)}px` }}
         >
             <p className={clsx(
-                "absolute top-[10px] left-[15px] text-[14px] font-normal font-sans leading-normal transition-colors",
+                "absolute top-[10px] left-[15px] text-[14px] font-bold font-sans leading-normal transition-colors text-black",
                 { 
-                    "text-black font-bold": day.isToday, 
-                    "text-black": !day.isToday 
+                    "underline": day.isToday, 
                 }
             )}>
                 {day.formattedDate}
@@ -181,7 +180,7 @@ export default function Main({
 
     if (isLoading) {
         return (
-            <main className="container mx-auto bg-black rounded-lg w-full animate-pulse">
+            <main className="container mx-auto bg-[#121212] rounded-lg w-full animate-pulse">
                 <div className="flex flex-col pt-2 px-3">
                     {[...Array(7)].map((_, i) => (
                         <div key={i} className="relative rounded-[20px] bg-gray-700 mb-[19px] last:mb-0" style={{ minHeight: '50px' }}>
@@ -196,7 +195,7 @@ export default function Main({
     return (
         <main 
             {...swipeHandlers} 
-            className="container mx-auto bg-black rounded-lg w-full overflow-y-auto" 
+            className="container mx-auto bg-[#121212] rounded-lg w-full overflow-y-auto" 
             style={{ height: 'calc(100vh - 180px)' }}
         >
             <div className="flex flex-col pt-2 px-3 pb-3">

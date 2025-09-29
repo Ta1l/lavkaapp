@@ -53,7 +53,7 @@ function DayRow({
 
     return (
         <div 
-            className="w-full relative transition-all duration-300 rounded-[20px] bg-[#FFEA00] mb-[17px] last:mb-0"
+            className="w-full relative transition-all duration-300 rounded-[20px] bg-[#FFEA00] mb-[15px] last:mb-0"
             style={{ minHeight: `${calculateHeight(slotsCount)}px` }}
         >
             <p className="absolute top-[10px] left-[15px] text-[14px] font-bold font-sans leading-normal text-black">

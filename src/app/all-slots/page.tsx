@@ -18,24 +18,34 @@ interface UserSlots {
 
 export default function AllSlotsPage() {
     const [currentDayIndex, setCurrentDayIndex] = useState(0);
-    const [weekOffset, setWeekOffset] = useState(0); // 0 = текущая неделя, 1 = следующая
     const [weekDays, setWeekDays] = useState<Day[]>([]);
     const [userSlots, setUserSlots] = useState<UserSlots[]>([]);
     const [loading, setLoading] = useState(false);
     const [apiKey, setApiKey] = useState<string>("");
 
     useEffect(() => {
-        // Получаем недели
-        const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
-        const selectedWeek = weekOffset === 0 ? mainWeek : nextWeek;
-        setWeekDays(selectedWeek);
+        // Функция обновления недели
+        const updateWeek = () => {
+            const { mainWeek } = getCalendarWeeks(new Date());
+            setWeekDays(mainWeek);
+        };
+
+        // Обновляем неделю при монтировании
+        updateWeek();
         
+        // Устанавливаем интервал для проверки смены недели каждую минуту
+        const interval = setInterval(() => {
+            updateWeek();
+        }, 60000); // проверяем каждую минуту
+
         // Получаем API ключ из localStorage
         const storedApiKey = localStorage.getItem("apiKey");
         if (storedApiKey) {
             setApiKey(storedApiKey);
         }
-    }, [weekOffset]);
+
+        return () => clearInterval(interval);
+    }, []);
 
     useEffect(() => {
         if (weekDays.length > 0 && apiKey) {
@@ -113,23 +123,13 @@ export default function AllSlotsPage() {
 
     const handlePrevDay = () => {
         if (currentDayIndex > 0) {
-            // Переход на предыдущий день в текущей неделе
             setCurrentDayIndex(currentDayIndex - 1);
-        } else if (weekOffset > 0) {
-            // Переход на предыдущую неделю, воскресенье
-            setWeekOffset(0);
-            setCurrentDayIndex(6);
         }
     };
 
     const handleNextDay = () => {
         if (currentDayIndex < 6) {
-            // Переход на следующий день в текущей неделе
             setCurrentDayIndex(currentDayIndex + 1);
-        } else if (weekOffset === 0) {
-            // Переход на следующую неделю, понедельник
-            setWeekOffset(1);
-            setCurrentDayIndex(0);
         }
     };
 
@@ -162,9 +162,8 @@ export default function AllSlotsPage() {
         return `${capitalizedDayName}, ${formattedDate}`;
     };
 
-    // Определяем, можно ли перейти назад/вперед
-    const isPrevDisabled = currentDayIndex === 0 && weekOffset === 0;
-    const isNextDisabled = currentDayIndex === 6 && weekOffset === 1;
+    const isPrevDisabled = currentDayIndex === 0;
+    const isNextDisabled = currentDayIndex === 6;
 
     const currentDay: Day = weekDays[currentDayIndex] || { 
         date: new Date(), 

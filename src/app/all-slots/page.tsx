@@ -196,12 +196,12 @@ export default function AllSlotsPage() {
                     userSlots.map((user, index) => (
                         <div 
                             key={user.userId}
-                            className={`rounded-[20px] bg-[#FFEA00]/80 min-h-[100px] pt-[10px] pl-[15px] pr-[15px] pb-[15px] ${
+                            className={`rounded-[20px] bg-[#FFEA00]/90 min-h-[100px] pt-[10px] pl-[15px] pr-[15px] pb-[15px] ${
                                 index < userSlots.length - 1 ? 'mb-[15px]' : ''
                             }`}
                         >
                             {/* Никнейм */}
-                            <p className="text-black font-['Inter'] text-[16px] font-normal leading-normal mb-[10px]">
+                            <p className="text-black font-['Jura'] text-[16px] font-normal leading-normal mb-[10px]">
                                 {user.userName}
                             </p>
                             

@@ -8,6 +8,7 @@ import { ru } from "date-fns/locale";
 import { getCalendarWeeks } from "@/lib/dateUtils";
 import { TimeSlot, Day } from "@/types/shifts";
 import TimeSlotComponent from "@/components/TimeSlotComponent";
+import { useSwipeable, SwipeableHandlers } from "react-swipeable";
 
 interface UserSlots {
     userId: number;
@@ -17,22 +18,24 @@ interface UserSlots {
 
 export default function AllSlotsPage() {
     const [currentDayIndex, setCurrentDayIndex] = useState(0);
+    const [weekOffset, setWeekOffset] = useState(0); // 0 = текущая неделя, 1 = следующая
     const [weekDays, setWeekDays] = useState<Day[]>([]);
     const [userSlots, setUserSlots] = useState<UserSlots[]>([]);
     const [loading, setLoading] = useState(false);
     const [apiKey, setApiKey] = useState<string>("");
 
     useEffect(() => {
-        // Получаем текущую неделю
-        const { mainWeek } = getCalendarWeeks(new Date());
-        setWeekDays(mainWeek);
+        // Получаем недели
+        const { mainWeek, nextWeek } = getCalendarWeeks(new Date());
+        const selectedWeek = weekOffset === 0 ? mainWeek : nextWeek;
+        setWeekDays(selectedWeek);
         
         // Получаем API ключ из localStorage
         const storedApiKey = localStorage.getItem("apiKey");
         if (storedApiKey) {
             setApiKey(storedApiKey);
         }
-    }, []);
+    }, [weekOffset]);
 
     useEffect(() => {
         if (weekDays.length > 0 && apiKey) {
@@ -48,7 +51,6 @@ export default function AllSlotsPage() {
             const currentDate = format(weekDays[currentDayIndex].date, "yyyy-MM-dd");
             const nextDate = format(new Date(weekDays[currentDayIndex].date.getTime() + 24 * 60 * 60 * 1000), "yyyy-MM-dd");
             
-            // ВАЖНО: Добавляем параметр allUsers=true для получения слотов ВСЕХ пользователей
             const res = await fetch(`/api/shifts?start=${currentDate}&end=${nextDate}&allUsers=true`, {
                 headers: { 
                     Authorization: `Bearer ${apiKey}` 
@@ -61,13 +63,12 @@ export default function AllSlotsPage() {
             }
 
             const data = await res.json();
-            console.log("Загруженные слоты:", data); // Для отладки
+            console.log("Загруженные слоты:", data);
             
             // Группируем слоты по пользователям
             const groupedSlots = new Map<number, UserSlots>();
             
             data.forEach((shift: any) => {
-                // Включаем ВСЕ занятые слоты (не только доступные)
                 if (shift.user_id) {
                     const [startTime, endTime] = shift.shift_code?.split("-") || ["", ""];
                     
@@ -101,7 +102,7 @@ export default function AllSlotsPage() {
                 user.slots.sort((a, b) => a.startTime.localeCompare(b.startTime));
             });
             
-            console.log("Сгруппированные слоты:", sortedUserSlots); // Для отладки
+            console.log("Сгруппированные слоты:", sortedUserSlots);
             setUserSlots(sortedUserSlots);
         } catch (error) {
             console.error("Ошибка загрузки данных:", error);
@@ -112,15 +113,42 @@ export default function AllSlotsPage() {
 
     const handlePrevDay = () => {
         if (currentDayIndex > 0) {
+            // Переход на предыдущий день в текущей неделе
             setCurrentDayIndex(currentDayIndex - 1);
+        } else if (weekOffset > 0) {
+            // Переход на предыдущую неделю, воскресенье
+            setWeekOffset(0);
+            setCurrentDayIndex(6);
         }
     };
 
     const handleNextDay = () => {
         if (currentDayIndex < 6) {
+            // Переход на следующий день в текущей неделе
             setCurrentDayIndex(currentDayIndex + 1);
+        } else if (weekOffset === 0) {
+            // Переход на следующую неделю, понедельник
+            setWeekOffset(1);
+            setCurrentDayIndex(0);
         }
     };
+
+    // Swipe handlers
+    const swipeHandlers: SwipeableHandlers = useSwipeable({
+        onSwipedLeft: () => {
+            if (!isNextDisabled) {
+                handleNextDay();
+            }
+        },
+        onSwipedRight: () => {
+            if (!isPrevDisabled) {
+                handlePrevDay();
+            }
+        },
+        preventScrollOnSwipe: true,
+        trackMouse: false,
+        delta: 30, // минимальное расстояние свайпа
+    });
 
     const getCurrentDayText = () => {
         if (weekDays.length === 0) return "";
@@ -134,8 +162,9 @@ export default function AllSlotsPage() {
         return `${capitalizedDayName}, ${formattedDate}`;
     };
 
-    const isPrevDisabled = currentDayIndex === 0;
-    const isNextDisabled = currentDayIndex === 6;
+    // Определяем, можно ли перейти назад/вперед
+    const isPrevDisabled = currentDayIndex === 0 && weekOffset === 0;
+    const isNextDisabled = currentDayIndex === 6 && weekOffset === 1;
 
     const currentDay: Day = weekDays[currentDayIndex] || { 
         date: new Date(), 
@@ -145,7 +174,7 @@ export default function AllSlotsPage() {
     };
 
     return (
-        <div className="min-h-screen bg-black text-white">
+        <div className="min-h-screen bg-black text-white" {...swipeHandlers}>
             {/* Навигация по дням */}
             <div className="relative w-full pt-[43px]">
                 {/* Кнопка влево */}

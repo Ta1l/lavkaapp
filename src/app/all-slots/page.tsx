@@ -9,15 +9,98 @@ import { getCalendarWeeks } from "@/lib/dateUtils";
 import { TimeSlot, Day } from "@/types/shifts";
 import TimeSlotComponent from "@/components/TimeSlotComponent";
 
+interface UserSlots {
+    userId: number;
+    userName: string;
+    slots: TimeSlot[];
+}
+
 export default function AllSlotsPage() {
-    const [currentDayIndex, setCurrentDayIndex] = useState(0); // 0 = понедельник, 6 = воскресенье
+    const [currentDayIndex, setCurrentDayIndex] = useState(0);
     const [weekDays, setWeekDays] = useState<Day[]>([]);
+    const [userSlots, setUserSlots] = useState<UserSlots[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [apiKey, setApiKey] = useState<string>("");
 
     useEffect(() => {
         // Получаем текущую неделю
         const { mainWeek } = getCalendarWeeks(new Date());
         setWeekDays(mainWeek);
+        
+        // Получаем API ключ из localStorage
+        const storedApiKey = localStorage.getItem("apiKey");
+        if (storedApiKey) {
+            setApiKey(storedApiKey);
+        }
     }, []);
+
+    useEffect(() => {
+        if (weekDays.length > 0 && apiKey) {
+            loadSlotsForDay();
+        }
+    }, [currentDayIndex, weekDays, apiKey]);
+
+    const loadSlotsForDay = async () => {
+        if (!weekDays[currentDayIndex]) return;
+
+        setLoading(true);
+        try {
+            const currentDate = format(weekDays[currentDayIndex].date, "yyyy-MM-dd");
+            const nextDate = format(new Date(weekDays[currentDayIndex].date.getTime() + 24 * 60 * 60 * 1000), "yyyy-MM-dd");
+            
+            // Загружаем все слоты на выбранный день
+            const res = await fetch(`/api/shifts?start=${currentDate}&end=${nextDate}`, {
+                headers: { 
+                    Authorization: `Bearer ${apiKey}` 
+                },
+            });
+            
+            if (!res.ok) {
+                console.error("Ошибка загрузки слотов");
+                return;
+            }
+
+            const data = await res.json();
+            
+            // Группируем слоты по пользователям
+            const groupedSlots = new Map<number, UserSlots>();
+            
+            data.forEach((shift: any) => {
+                if (shift.user_id && shift.status !== "cancelled") {
+                    const [startTime, endTime] = shift.shift_code?.split("-") || ["", ""];
+                    
+                    const slot: TimeSlot = {
+                        id: shift.id,
+                        startTime: startTime.trim(),
+                        endTime: endTime.trim(),
+                        status: shift.status as any,
+                        user_id: shift.user_id,
+                        userName: shift.username || `user${shift.user_id}`
+                    };
+
+                    if (!groupedSlots.has(shift.user_id)) {
+                        groupedSlots.set(shift.user_id, {
+                            userId: shift.user_id,
+                            userName: shift.username || shift.full_name || `user${shift.user_id}`,
+                            slots: []
+                        });
+                    }
+                    
+                    groupedSlots.get(shift.user_id)!.slots.push(slot);
+                }
+            });
+            
+            // Преобразуем Map в массив и сортируем по userId
+            const sortedUserSlots = Array.from(groupedSlots.values())
+                .sort((a, b) => a.userId - b.userId);
+            
+            setUserSlots(sortedUserSlots);
+        } catch (error) {
+            console.error("Ошибка загрузки данных:", error);
+        } finally {
+            setLoading(false);
+        }
+    };
 
     const handlePrevDay = () => {
         if (currentDayIndex > 0) {
@@ -31,7 +114,6 @@ export default function AllSlotsPage() {
         }
     };
 
-    // Форматируем текущий день
     const getCurrentDayText = () => {
         if (weekDays.length === 0) return "";
         
@@ -39,7 +121,6 @@ export default function AllSlotsPage() {
         const dayName = format(currentDay.date, "EEEE", { locale: ru });
         const formattedDate = format(currentDay.date, "d MMMM", { locale: ru });
         
-        // Делаем первую букву заглавной
         const capitalizedDayName = dayName.charAt(0).toUpperCase() + dayName.slice(1);
         
         return `${capitalizedDayName}, ${formattedDate}`;
@@ -47,12 +128,6 @@ export default function AllSlotsPage() {
 
     const isPrevDisabled = currentDayIndex === 0;
     const isNextDisabled = currentDayIndex === 6;
-
-    // Временные данные для демонстрации
-    const mockSlots: TimeSlot[] = [
-        { id: 1, startTime: "09:00", endTime: "12:00", status: "taken", user_id: 5, userName: "egor" },
-        { id: 2, startTime: "14:00", endTime: "18:00", status: "taken", user_id: 5, userName: "egor" },
-    ];
 
     const currentDay: Day = weekDays[currentDayIndex] || { 
         date: new Date(), 
@@ -105,27 +180,44 @@ export default function AllSlotsPage() {
                 </button>
             </div>
 
-            {/* Карточка пользователя egor */}
-            <div className="mt-[50px] mx-[19px] rounded-[20px] bg-[#FFEA00]/80 min-h-[100px] pt-[10px] pl-[15px] pr-[15px] pb-[15px]">
-                {/* Никнейм */}
-                <p className="text-black font-['Inter'] text-[16px] font-normal leading-normal mb-[10px]">
-                    egor
-                </p>
-                
-                {/* Слоты */}
-                <div className="flex flex-col gap-[6px]">
-                    {mockSlots.map((slot) => (
-                        <TimeSlotComponent
-                            key={slot.id}
-                            slot={slot}
-                            day={currentDay}
-                            onTakeSlot={() => {}}
-                            onDeleteSlot={() => {}}
-                            currentUserId={null}
-                            isOwner={false}
-                        />
-                    ))}
-                </div>
+            {/* Карточки пользователей со слотами */}
+            <div className="mt-[50px] px-[19px] pb-[20px]">
+                {loading ? (
+                    <div className="text-center text-gray-400">Загрузка...</div>
+                ) : userSlots.length > 0 ? (
+                    userSlots.map((user, index) => (
+                        <div 
+                            key={user.userId}
+                            className={`rounded-[20px] bg-[#FFEA00]/80 min-h-[100px] pt-[10px] pl-[15px] pr-[15px] pb-[15px] ${
+                                index < userSlots.length - 1 ? 'mb-[15px]' : ''
+                            }`}
+                        >
+                            {/* Никнейм */}
+                            <p className="text-black font-['Inter'] text-[16px] font-normal leading-normal mb-[10px]">
+                                {user.userName}
+                            </p>
+                            
+                            {/* Слоты */}
+                            <div className="flex flex-col gap-[6px]">
+                                {user.slots.map((slot) => (
+                                    <TimeSlotComponent
+                                        key={slot.id}
+                                        slot={slot}
+                                        day={currentDay}
+                                        onTakeSlot={() => {}}
+                                        onDeleteSlot={() => {}}
+                                        currentUserId={null}
+                                        isOwner={false}
+                                    />
+                                ))}
+                            </div>
+                        </div>
+                    ))
+                ) : (
+                    <div className="text-center text-gray-400">
+                        Нет слотов на этот день
+                    </div>
+                )}
             </div>
         </div>
     );

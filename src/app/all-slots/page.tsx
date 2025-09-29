@@ -106,7 +106,7 @@ export default function AllSlotsPage() {
             </div>
 
             {/* Карточка пользователя egor */}
-            <div className="mt-[50px] mx-[19px] rounded-[20px] bg-[#FFEA00]/80 min-h-[100px] pt-[15px] pl-[15px] pr-[15px] pb-[15px]">
+            <div className="mt-[50px] mx-[19px] rounded-[20px] bg-[#FFEA00]/80 min-h-[100px] pt-[10px] pl-[15px] pr-[15px] pb-[15px]">
                 {/* Никнейм */}
                 <p className="text-black font-['Inter'] text-[16px] font-normal leading-normal mb-[10px]">
                     egor
@@ -125,35 +125,6 @@ export default function AllSlotsPage() {
                             isOwner={false}
                         />
                     ))}
-                </div>
-            </div>
-
-            {/* Подложка для слотов (оригинальная) */}
-            <div className="mt-[19px] mx-[19px] rounded-[20px] bg-[#577C93] min-h-[400px] pt-[8px] pl-[15px] pr-6 pb-6">
-                {/* Никнейм */}
-                <p className="text-white font-['Inter'] text-[20px] font-normal leading-normal">
-                    Gleb
-                </p>
-                
-                <div className="text-white text-center mt-4">
-                    {weekDays.length > 0 && (
-                        <div className="mb-4 text-sm opacity-80">
-                            Отображение слотов для: {format(weekDays[currentDayIndex].date, "dd.MM.yyyy")}
-                        </div>
-                    )}
-                    
-                    {/* Временный контент для демонстрации */}
-                    <div className="space-y-4 mt-8">
-                        <div className="bg-white/10 rounded-lg p-4">
-                            <p className="text-left">Слот 1: 09:00 - 12:00</p>
-                        </div>
-                        <div className="bg-white/10 rounded-lg p-4">
-                            <p className="text-left">Слот 2: 14:00 - 18:00</p>
-                        </div>
-                        <div className="bg-white/10 rounded-lg p-4">
-                            <p className="text-left">Слот 3: 19:00 - 22:00</p>
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>

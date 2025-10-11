@@ -89,3 +89,8 @@ node_modules/
 # Временные файлы
 *.tmp
 *.temp
+
+test_images/
+ocr_debug_output/
+test_ocr.py
+test_full_system.py

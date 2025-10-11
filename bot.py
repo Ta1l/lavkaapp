@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# main.py (бывший bot.py)
+# bot.py
 """
 Главный файл для запуска Telegram бота.
 """

@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 OCR-модуль для извлечения слотов из скриншотов.
-Каждый скриншот = отдельный день с желтым выделением даты.
+Улучшенная версия с робастным определением дня из желтого квадрата.
 """
 
 import os
@@ -11,6 +11,7 @@ import logging
 from datetime import date
 from typing import List, Dict, Optional, Tuple, Any
 from io import BytesIO
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -26,17 +27,28 @@ if platform.system() == "Windows":
 else:
     pytesseract.pytesseract.tesseract_cmd = "tesseract"
 
-# --------- Константы ---------
+# --------- Константы и конфигурация ---------
 FIXED_YEAR = 2025
 FIXED_MONTH = 10
 
+# Конфигурация поиска желтого квадрата
+YELLOW_HSV_LOWER = np.array([8, 60, 80], dtype=np.uint8)
+YELLOW_HSV_UPPER = np.array([50, 255, 255], dtype=np.uint8)
+MIN_AREA_RATIO = 0.0005  # Минимальная площадь контура относительно изображения
+MAX_AREA_RATIO = 0.1     # Максимальная площадь (чтобы не захватить весь экран)
+ASPECT_RATIO_MIN = 0.5    # Минимальное соотношение сторон
+ASPECT_RATIO_MAX = 2.5    # Максимальное соотношение сторон
+FILL_RATIO_MIN = 0.4      # Минимальная заполненность контура
+
+# Конфигурация OCR
+OCR_CONFIDENCE_THRESHOLD = 50  # Минимальная уверенность OCR
+OCR_SCALE_FACTOR = 3.5         # Масштабирование для OCR
+PADDING_RATIO = 0.08           # Отступ вокруг желтого квадрата (% от размера)
+
 # Паттерны для поиска времени
 TIME_RANGE_PATTERNS = [
-    # HH:MM - HH:MM
     re.compile(r"(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})"),
-    # HH.MM - HH.MM
     re.compile(r"(\d{1,2})\.(\d{2})\s*[-–—]\s*(\d{1,2})\.(\d{2})"),
-    # HHMM - HHMM
     re.compile(r"(\d{2})(\d{2})\s*[-–—]\s*(\d{2})(\d{2})"),
 ]
 
@@ -76,46 +88,47 @@ def _read_image(image_input: Any) -> Optional[np.ndarray]:
         return None
 
 
-def _crop_top(img: np.ndarray, crop_percent: float = 0.05) -> np.ndarray:
+def _crop_top(img: np.ndarray, crop_percent: float = 0.03) -> np.ndarray:
     """Обрезает верхнюю часть изображения (системную панель)."""
     h, w = img.shape[:2]
     crop_height = int(h * crop_percent)
     return img[crop_height:, :]
 
 
-def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+def _find_yellow_box_robust(img: np.ndarray, debug: bool = False) -> Optional[Tuple[int, int, int, int]]:
     """
-    Находит желтый квадрат на изображении.
-    Возвращает (x, y, width, height) или None.
+    Робастный поиск желтого квадрата на всем изображении.
+    Использует адаптивные параметры относительно размера изображения.
     """
     try:
-        # Конвертируем в HSV
+        h, w = img.shape[:2]
+        img_area = h * w
+        
+        # HSV маска для желтого/оранжевого
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+        mask_hsv = cv2.inRange(hsv, YELLOW_HSV_LOWER, YELLOW_HSV_UPPER)
         
-        # Определяем диапазоны для желтого/оранжевого цвета
-        # Желтый в HSV примерно от 20 до 35
-        lower_yellow = np.array([15, 50, 50])
-        upper_yellow = np.array([35, 255, 255])
+        # Дополнительная маска через Lab цветовое пространство
+        # В Lab желтый имеет высокий b-канал
+        lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+        l_channel, a_channel, b_channel = cv2.split(lab)
         
-        # Дополнительный диапазон для оранжевого
-        lower_orange = np.array([10, 50, 50])
-        upper_orange = np.array([20, 255, 255])
-        
-        # Создаем маски
-        mask_yellow = cv2.inRange(hsv, lower_yellow, upper_yellow)
-        mask_orange = cv2.inRange(hsv, lower_orange, upper_orange)
+        # Желтый в Lab: высокий b (>145) и средний/высокий L
+        mask_lab = cv2.inRange(b_channel, 145, 255)
         
         # Объединяем маски
-        mask = cv2.bitwise_or(mask_yellow, mask_orange)
+        mask = cv2.bitwise_or(mask_hsv, mask_lab)
         
-        # Ищем только в верхней половине изображения
-        h = mask.shape[0]
-        mask[h//2:, :] = 0
+        # Адаптивный размер ядра для морфологии
+        kernel_size = max(3, int(round(min(h, w) * 0.008)))
+        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_size, kernel_size))
         
-        # Морфологические операции для удаления шума
-        kernel = np.ones((5, 5), np.uint8)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
-        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        # Морфологические операции для удаления шума и заполнения дыр
+        mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel, iterations=2)
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel, iterations=1)
+        
+        if debug:
+            cv2.imwrite("debug_yellow_mask.png", mask)
         
         # Находим контуры
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -124,53 +137,67 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
             logger.warning("No yellow contours found")
             return None
         
-        # Фильтруем контуры по размеру и форме
-        valid_boxes = []
+        # Фильтруем и оцениваем контуры
+        candidates = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 500:  # Слишком маленький
+            
+            # Проверка размера относительно изображения
+            area_ratio = area / img_area
+            if area_ratio < MIN_AREA_RATIO or area_ratio > MAX_AREA_RATIO:
                 continue
             
             x, y, w, h = cv2.boundingRect(cnt)
             
-            # Проверяем соотношение сторон (должен быть примерно квадрат)
+            # Проверка соотношения сторон
             aspect_ratio = w / float(h)
-            if aspect_ratio < 0.6 or aspect_ratio > 1.7:
+            if aspect_ratio < ASPECT_RATIO_MIN or aspect_ratio > ASPECT_RATIO_MAX:
                 continue
             
-            # Проверяем заполненность (контур должен быть достаточно заполнен)
+            # Проверка заполненности
             rect_area = w * h
             fill_ratio = area / rect_area
-            if fill_ratio < 0.5:
+            if fill_ratio < FILL_RATIO_MIN:
                 continue
             
-            valid_boxes.append((x, y, w, h, area))
-        
-        if not valid_boxes:
-            logger.warning("No valid yellow boxes found")
+            # Добавляем кандидата с его площадью для сортировки
+            candidates.append((x, y, w, h, area))
+            
+        if not candidates:
+            logger.warning("No valid yellow boxes found after filtering")
             return None
         
-        # Выбираем самый большой по площади
-        valid_boxes.sort(key=lambda b: b[4], reverse=True)
-        best_box = valid_boxes[0][:4]
+        # Выбираем самый большой по площади контур
+        candidates.sort(key=lambda c: c[4], reverse=True)
+        best_box = candidates[0][:4]
         
         logger.info(f"Found yellow box at ({best_box[0]}, {best_box[1]}) size ({best_box[2]}x{best_box[3]})")
+        
+        if debug:
+            debug_img = img.copy()
+            x, y, w, h = best_box
+            cv2.rectangle(debug_img, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            cv2.imwrite("debug_yellow_box_detected.png", debug_img)
+        
         return best_box
         
     except Exception as e:
-        logger.error(f"Error finding yellow box: {e}")
+        logger.error(f"Error in _find_yellow_box_robust: {e}")
         return None
 
 
-def _extract_day_from_box(img: np.ndarray, box: Tuple[int, int, int, int]) -> Optional[int]:
+def _extract_day_from_box_advanced(img: np.ndarray, box: Tuple[int, int, int, int], debug: bool = False) -> Optional[int]:
     """
-    Извлекает день из желтого квадрата.
+    Продвинутое извлечение дня из желтого квадрата.
+    Использует image_to_data для выбора самого крупного числа.
     """
     try:
         x, y, w, h = box
         
-        # Вырезаем область с небольшим отступом
-        padding = 5
+        # Адаптивный отступ относительно размера бокса
+        padding = max(4, int(round(PADDING_RATIO * max(w, h))))
+        
+        # Вырезаем ROI с отступом
         x1 = max(0, x - padding)
         y1 = max(0, y - padding)
         x2 = min(img.shape[1], x + w + padding)
@@ -185,54 +212,130 @@ def _extract_day_from_box(img: np.ndarray, box: Tuple[int, int, int, int]) -> Op
         # Конвертируем в grayscale
         gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
         
-        # Увеличиваем для лучшего OCR
-        scale = 3.0
+        # Применяем CLAHE для улучшения контраста
+        clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+        gray = clahe.apply(gray)
+        
+        # Легкое размытие перед бинаризацией
+        gray = cv2.GaussianBlur(gray, (3, 3), 0)
+        
+        # Масштабируем для лучшего OCR
+        scale = OCR_SCALE_FACTOR
         width = int(gray.shape[1] * scale)
         height = int(gray.shape[0] * scale)
-        gray = cv2.resize(gray, (width, height), interpolation=cv2.INTER_CUBIC)
+        gray_scaled = cv2.resize(gray, (width, height), interpolation=cv2.INTER_CUBIC)
         
-        # Применяем пороговую обработку
-        # Пробуем инвертировать, так как цифра может быть темной на желтом фоне
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # Список кандидатов (число, высота_bbox, площадь_bbox, уверенность)
+        all_candidates = []
         
-        # OCR - ищем только цифры
-        custom_config = r'--psm 8 -c tessedit_char_whitelist=0123456789'
-        text = pytesseract.image_to_string(thresh, config=custom_config)
+        # Пробуем разные варианты бинаризации и PSM режимы
+        for invert in [True, False]:
+            for psm in [6, 7, 8]:  # Разные режимы сегментации
+                try:
+                    # Бинаризация
+                    if invert:
+                        _, thresh = cv2.threshold(gray_scaled, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                    else:
+                        _, thresh = cv2.threshold(gray_scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    
+                    if debug:
+                        cv2.imwrite(f"debug_thresh_inv{invert}_psm{psm}.png", thresh)
+                    
+                    # OCR с image_to_data для получения bbox каждого элемента
+                    config = f"--oem 1 --psm {psm} -c tessedit_char_whitelist=0123456789 -c tessedit_char_blacklist=/"
+                    data = pytesseract.image_to_data(thresh, config=config, output_type=pytesseract.Output.DICT)
+                    
+                    # Анализируем каждый распознанный элемент
+                    for i in range(len(data["text"])):
+                        text = str(data["text"][i]).strip()
+                        conf = int(data["conf"][i]) if str(data["conf"][i]).lstrip('-').isdigit() else -1
+                        
+                        # Пропускаем элементы с низкой уверенностью или пустые
+                        if not text or conf < OCR_CONFIDENCE_THRESHOLD:
+                            continue
+                        
+                        # Проверяем, что это число от 1 до 31
+                        if re.fullmatch(r"\d{1,2}", text):
+                            val = int(text)
+                            if 1 <= val <= 31:
+                                # Получаем размеры bbox
+                                bbox_width = int(data["width"][i])
+                                bbox_height = int(data["height"][i])
+                                bbox_area = bbox_width * bbox_height
+                                
+                                # Добавляем кандидата
+                                all_candidates.append((val, bbox_height, bbox_area, conf, psm, invert))
+                                
+                                if debug:
+                                    logger.debug(f"Candidate: day={val}, height={bbox_height}, area={bbox_area}, conf={conf}, psm={psm}, inv={invert}")
+                
+                except Exception as e:
+                    logger.debug(f"OCR attempt failed (psm={psm}, invert={invert}): {e}")
+                    continue
         
-        # Извлекаем числа
-        numbers = re.findall(r'\d+', text)
+        if not all_candidates:
+            logger.warning("No day candidates found with image_to_data")
+            
+            # Fallback: простой image_to_string
+            for invert in [True, False]:
+                try:
+                    if invert:
+                        _, thresh = cv2.threshold(gray_scaled, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                    else:
+                        _, thresh = cv2.threshold(gray_scaled, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    
+                    config = "--psm 8 -c tessedit_char_whitelist=0123456789"
+                    text = pytesseract.image_to_string(thresh, config=config)
+                    
+                    # Ищем числа, но берем только те, что в диапазоне 1-31
+                    numbers = re.findall(r'\d+', text)
+                    for num_str in numbers:
+                        if len(num_str) <= 2:  # Игнорируем длинные числа
+                            num = int(num_str)
+                            if 1 <= num <= 31:
+                                # Для fallback используем фиктивные размеры
+                                all_candidates.append((num, 100, 10000, 75, 0, invert))
+                                logger.info(f"Fallback found day: {num}")
+                                
+                except Exception as e:
+                    logger.debug(f"Fallback failed (invert={invert}): {e}")
         
-        for num_str in numbers:
-            num = int(num_str)
-            if 1 <= num <= 31:
-                logger.info(f"Extracted day from yellow box: {num}")
-                return num
+        if all_candidates:
+            # Сортируем кандидатов:
+            # 1. По высоте bbox (больше = лучше)
+            # 2. По площади bbox (больше = лучше)  
+            # 3. По уверенности (выше = лучше)
+            all_candidates.sort(key=lambda c: (c[1], c[2], c[3]), reverse=True)
+            
+            best_candidate = all_candidates[0]
+            day = best_candidate[0]
+            
+            logger.info(f"Selected day {day} from {len(all_candidates)} candidates")
+            logger.debug(f"Best candidate details: day={day}, height={best_candidate[1]}, area={best_candidate[2]}, conf={best_candidate[3]}")
+            
+            # Дополнительная проверка: если есть несколько кандидатов с одинаковым числом,
+            # это повышает уверенность
+            day_counts = Counter([c[0] for c in all_candidates])
+            if day_counts[day] > 1:
+                logger.info(f"Day {day} appeared {day_counts[day]} times - high confidence")
+            
+            return day
         
-        # Если не нашли с инверсией, пробуем без инверсии
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        text = pytesseract.image_to_string(thresh, config=custom_config)
-        numbers = re.findall(r'\d+', text)
-        
-        for num_str in numbers:
-            num = int(num_str)
-            if 1 <= num <= 31:
-                logger.info(f"Extracted day from yellow box (non-inverted): {num}")
-                return num
-        
-        logger.warning(f"No valid day found in yellow box, OCR result: {text}")
+        logger.warning("No valid day found in yellow box")
         return None
         
     except Exception as e:
-        logger.error(f"Error extracting day from box: {e}")
+        logger.error(f"Error in _extract_day_from_box_advanced: {e}")
         return None
 
 
 def _find_time_slots(img: np.ndarray) -> List[Tuple[str, str]]:
     """
     Находит временные слоты на изображении.
+    Фокусируется на нижней части где обычно расположены слоты.
     """
     try:
-        # Фокусируемся на нижней части изображения (где обычно слоты)
+        # Берем нижние 3/4 изображения
         h = img.shape[0]
         bottom_part = img[h//4:, :]
         
@@ -245,6 +348,7 @@ def _find_time_slots(img: np.ndarray) -> List[Tuple[str, str]]:
         # Нормализуем текст
         text = text.replace('О', '0').replace('о', '0')  # Русские О на нули
         text = text.replace('З', '3').replace('з', '3')  # Русские З на 3
+        text = text.replace('б', '6').replace('Б', '6')  # Русские Б на 6
         
         slots = []
         
@@ -268,6 +372,36 @@ def _find_time_slots(img: np.ndarray) -> List[Tuple[str, str]]:
                 except:
                     continue
         
+        # Если не нашли слоты, пробуем с предобработкой
+        if not slots:
+            # CLAHE для улучшения контраста
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+            enhanced = clahe.apply(gray)
+            
+            # Бинаризация
+            _, binary = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            
+            # Повторяем OCR
+            text = pytesseract.image_to_string(binary, lang='rus+eng')
+            text = text.replace('О', '0').replace('о', '0')
+            text = text.replace('З', '3').replace('з', '3')
+            
+            for pattern in TIME_RANGE_PATTERNS:
+                matches = pattern.findall(text)
+                for match in matches:
+                    try:
+                        h1, m1, h2, m2 = match
+                        h1, m1, h2, m2 = int(h1), int(m1), int(h2), int(m2)
+                        
+                        if 0 <= h1 < 24 and 0 <= m1 < 60 and 0 <= h2 < 24 and 0 <= m2 < 60:
+                            start_time = f"{h1:02d}:{m1:02d}"
+                            end_time = f"{h2:02d}:{m2:02d}"
+                            
+                            if h2 > h1 or (h2 == h1 and m2 > m1):
+                                slots.append((start_time, end_time))
+                    except:
+                        continue
+        
         # Убираем дубликаты
         unique_slots = []
         seen = set()
@@ -289,6 +423,8 @@ class NewFormatSlotParser:
     
     def __init__(self, debug: bool = False):
         self.debug = debug
+        if debug:
+            logger.setLevel(logging.DEBUG)
         
     def process_image(self, image_input: Any) -> List[Dict]:
         """
@@ -303,17 +439,17 @@ class NewFormatSlotParser:
         logger.info(f"Processing image, shape: {img.shape}")
         
         # 2. Обрезаем верх (системное время)
-        img = _crop_top(img, crop_percent=0.05)
+        img = _crop_top(img, crop_percent=0.03)
         
-        # 3. Находим желтый квадрат
-        yellow_box = _find_yellow_box(img)
+        # 3. Находим желтый квадрат (робастный поиск по всему изображению)
+        yellow_box = _find_yellow_box_robust(img, debug=self.debug)
         
         if yellow_box is None:
             logger.error("Yellow box not found on image")
             return []
         
-        # 4. Извлекаем день из желтого квадрата
-        day = _extract_day_from_box(img, yellow_box)
+        # 4. Извлекаем день из желтого квадрата (продвинутый метод)
+        day = _extract_day_from_box_advanced(img, yellow_box, debug=self.debug)
         
         if day is None:
             logger.error("Could not extract day from yellow box")
@@ -393,7 +529,7 @@ class MemorySlotParser:
             
         except Exception as e:
             self.last_error = str(e)
-            logger.error(f"Error processing screenshot: {e}")
+            logger.error(f"Error processing screenshot: {e}", exc_info=True)
             return []
     
     def process_screenshot(self, image_bytes: BytesIO, is_last: bool = False) -> List[Dict]:
@@ -455,7 +591,8 @@ class MemorySlotParser:
     def preprocess_image_array(self, image_array: np.ndarray) -> Optional[np.ndarray]:
         """Для совместимости со старым кодом."""
         gray = cv2.cvtColor(image_array, cv2.COLOR_BGR2GRAY)
-        return gray
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        return clahe.apply(gray)
     
     def _extract_lines_from_data(self, data: Dict) -> List[Dict]:
         """Для совместимости со старым кодом."""

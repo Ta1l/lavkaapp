@@ -147,9 +147,8 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
 
 def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Optional[int]:
     """
-    Распознавание дня из жёлтого квадрата с использованием EasyOCR + шаблонов.
-    Принимает: img (BGR), box (x, y, w, h)
-    Возвращает: Optional[int] - день от 1 до 31
+    Улучшенное извлечение дня (EasyOCR + template) с улучшенной агрегацией и штрафами для шаблонных совпадений.
+    Возвращает int 1..31 или None.
     """
     global _READER
     try:
@@ -158,25 +157,22 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
             return None
 
         x, y, w, h = box
-        # crop EXACT (минимальный padding)
         pad = max(0, int(min(w, h) * 0.05))
-        x1, y1, x2, y2 = max(0, x-pad), max(0, y-pad), min(img.shape[1], x + w + pad), min(img.shape[0], y + h + pad)
+        x1, y1, x2, y2 = max(0, x - pad), max(0, y - pad), min(img.shape[1], x + w + pad), min(img.shape[0], y + h + pad)
         roi_bgr = img[y1:y2, x1:x2].copy()
         if roi_bgr.size == 0:
             logger.warning("Empty ROI for yellow box")
             return None
 
-        # original gray (no heavy binarization) for template matching
         roi_gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
 
-        # 1) EasyOCR on several scales
-        ocr_candidates = []  # tuples (num:int, conf:float(0..100), x:int)
+        # 1) EasyOCR candidates (several scales)
+        ocr_tokens = []  # list of dicts: {"num":int, "conf":float(0..100), "x":int, "src":"ocr"}
         scales = [1.5, 2.5, 3.5]
         for s in scales:
             try:
                 h0, w0 = roi_gray.shape
                 img_r = cv2.resize(roi_gray, (int(w0 * s), int(h0 * s)), interpolation=cv2.INTER_CUBIC)
-                # Reader returns list of (bbox, text, conf)
                 results = _READER.readtext(img_r, detail=1, paragraph=False)
             except Exception as e:
                 logger.debug(f"EasyOCR readtext failed on scale={s}: {e}")
@@ -184,14 +180,11 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
             for bbox, text, conf in results:
                 if not text:
                     continue
-                # normalize and extract digits (handle '/'); text from EasyOCR is str, conf float 0..1
                 tnorm = text.replace(' ', '').replace('O','0').replace('o','0').replace('l','1').replace('I','1')
                 if '/' in tnorm:
-                    left = tnorm.split('/')[0]
-                    matches = re.findall(r'\d{1,2}', left)
+                    matches = re.findall(r'\d{1,2}', tnorm.split('/')[0])
                 else:
                     matches = re.findall(r'\d{1,2}', tnorm)
-                # compute leftmost x from bbox scaled back to ROI coords
                 try:
                     xs = [int(pt[0]) for pt in bbox]
                     left_px = min(xs)
@@ -201,12 +194,11 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
                 for m in matches:
                     v = int(m)
                     if 1 <= v <= 31:
-                        ocr_candidates.append((v, float(conf) * 100.0, x_coord))
+                        ocr_tokens.append({"num": v, "conf": float(conf) * 100.0, "x": x_coord, "src": "ocr"})
 
-        # 2) Template-matching on edges of original ROI (no color changes)
+        # 2) Template matching as before (edge templates)
         edges = cv2.Canny(roi_gray, 50, 150)
-
-        def _make_edge_templates(sizes=(28, 36, 48)):
+        def _make_edge_templates(sizes=(28,36,48)):
             tpls = {}
             for size in sizes:
                 tpl_dict = {}
@@ -221,8 +213,7 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
                     tpl_dict[d] = tpl_edge
                 tpls[size] = tpl_dict
             return tpls
-
-        templates = _make_edge_templates((28, 36, 48))
+        templates = _make_edge_templates((28,36,48))
 
         def _nms_matches(score_map, tpl_w, tpl_h, thresh=0.55):
             matches = []
@@ -233,14 +224,12 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
                     break
                 matches.append((maxLoc[0], maxLoc[1], float(maxVal)))
                 x0, y0 = maxLoc
-                x1n = max(0, x0 - tpl_w // 2)
-                y1n = max(0, y0 - tpl_h // 2)
-                x2n = min(sm.shape[1], x0 + tpl_w // 2)
-                y2n = min(sm.shape[0], y0 + tpl_h // 2)
+                x1n = max(0, x0 - tpl_w//2); y1n = max(0, y0 - tpl_h//2)
+                x2n = min(sm.shape[1], x0 + tpl_w//2); y2n = min(sm.shape[0], y0 + tpl_h//2)
                 sm[y1n:y2n, x1n:x2n] = 0
             return matches
 
-        template_matches = []
+        template_tokens = []  # list of dicts: {"num":int, "conf":int(0..100), "x":int, "src":"tmpl"}
         for size, tpl_dict in templates.items():
             for d, tpl_edge in tpl_dict.items():
                 try:
@@ -248,12 +237,12 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
                         continue
                     res = cv2.matchTemplate(edges, tpl_edge, cv2.TM_CCOEFF_NORMED)
                     matches = _nms_matches(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=0.58)
-                    for (mx, my, score) in matches:
-                        template_matches.append((int(d), int(mx), float(score) * 100.0))
+                    for mx, my, score in matches:
+                        template_tokens.append({"num": int(d), "conf": int(score * 100.0), "x": int(mx), "src": "tmpl"})
                 except Exception:
                     continue
         # fallback lower threshold
-        if not template_matches:
+        if not template_tokens:
             for size, tpl_dict in templates.items():
                 for d, tpl_edge in tpl_dict.items():
                     try:
@@ -261,28 +250,30 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
                             continue
                         res = cv2.matchTemplate(edges, tpl_edge, cv2.TM_CCOEFF_NORMED)
                         matches = _nms_matches(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=0.45)
-                        for (mx, my, score) in matches:
-                            template_matches.append((int(d), int(mx), float(score) * 100.0))
+                        for mx, my, score in matches:
+                            template_tokens.append({"num": int(d), "conf": int(score * 100.0), "x": int(mx), "src": "tmpl"})
                     except Exception:
                         continue
 
         merged_tokens = []
-        for v, conf, xcoord in ocr_candidates:
-            merged_tokens.append({"num": int(v), "conf": int(conf), "x": xcoord})
-        for d, xpos, conf in template_matches:
-            merged_tokens.append({"num": int(d), "conf": int(conf), "x": int(xpos)})
+        for t in ocr_tokens:
+            merged_tokens.append(t)
+        for t in template_tokens:
+            merged_tokens.append(t)
 
         if not merged_tokens:
             logger.warning("No tokens found by EasyOCR or templates in ROI.")
             return None
 
-        # Построение кандидатов: объединяем соседние цифры по x
-        tokens_with_x = [t for t in merged_tokens if t.get("x") is not None]
-        score_map = {}
-        for t in merged_tokens:
-            score_map.setdefault(t["num"], 0)
-            score_map[t["num"]] += max(0, int(t["conf"]))
+        # Build contributions: number -> list of contributions (conf, src, x)
+        contributions = {}  # key: candidate_number (1..31 or composed) -> list of dicts
+        # first: single-digit contributions
+        for tok in merged_tokens:
+            n = int(tok["num"])
+            contributions.setdefault(n, []).append({"conf": int(tok["conf"]), "src": tok.get("src", "unk"), "x": tok.get("x")})
 
+        # try to form two-digit candidates from tokens_with_x by proximity
+        tokens_with_x = [t for t in merged_tokens if t.get("x") is not None]
         if tokens_with_x:
             tokens_with_x.sort(key=lambda t: t["x"])
             roi_w = roi_gray.shape[1]
@@ -293,26 +284,112 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
                         break
                     right = tokens_with_x[j]
                     dist = right["x"] - left["x"]
-                    if dist < max(roi_w * 0.7, 80):
+                    # tighter distance threshold than раньше: не больше 0.5 * roi_w and absolute < 60 px
+                    if dist < max(min(roi_w * 0.5, 60), 30):
                         num = left["num"] * 10 + right["num"]
                         if 1 <= num <= 31:
-                            ssum = int(left["conf"]) + int(right["conf"])
-                            score_map.setdefault(num, 0)
-                            score_map[num] += max(0, ssum)
+                            contributions.setdefault(num, [])
+                            contributions[num].append({"conf": int(left["conf"]), "src": left.get("src","unk"), "x": left.get("x")})
+                            contributions[num].append({"conf": int(right["conf"]), "src": right.get("src","unk"), "x": right.get("x")})
 
-        if score_map:
-            items = list(score_map.items())
-            items.sort(key=lambda kv: (-(10 <= kv[0] <= 31), -kv[1], -kv[0]))
-            chosen = items[0][0]
-            logger.info(f"Day candidates (agg): {score_map}, selected: {chosen}")
-            return int(chosen)
+        # Now compute metrics for each candidate
+        candidate_metrics = {}  # num -> metrics dict
+        # source weights
+        W = {"ocr": 1.0, "tmpl": 0.6, "unk": 0.5}
 
-        logger.warning("No valid day composed after aggregation with EasyOCR.")
-        return None
+        for num, contribs in contributions.items():
+            # deduplicate contributions (same x and src) optionally
+            # compute totals
+            total_weighted = 0.0
+            total_conf = 0.0
+            xs = []
+            count_ocr = 0
+            for c in contribs:
+                src = c.get("src","unk")
+                weight = W.get(src, 0.6)
+                conf = int(c.get("conf", 0))
+                total_weighted += conf * weight
+                total_conf += conf
+                if c.get("x") is not None:
+                    xs.append(int(c["x"]))
+                if src == "ocr":
+                    count_ocr += 1
+            count = len(contribs)
+            avg_conf = (total_conf / count) if count > 0 else 0.0
+            span = (max(xs) - min(xs)) if xs else 0
+            # penalize huge spatial span (digits too far apart)
+            span_penalty = 1.0
+            if span > max(roi_gray.shape[1] * 0.6, 80):
+                span_penalty = 0.6
+            # validity checks for two-digit: require at least one OCR token or both template tokens very confident
+            is_two_digit = (10 <= num <= 31)
+            valid_two_digit = True
+            if is_two_digit:
+                if count_ocr >= 1:
+                    valid_two_digit = True
+                else:
+                    # if no OCR contributors, require both parts to have high template conf (>=85)
+                    # identify approx left and right confs if available by splitting contribs by x
+                    if len(xs) >= 2:
+                        # basic split
+                        sorted_cs = sorted([c for c in contribs if c.get("x") is not None], key=lambda c: c["x"])
+                        # estimate two groups
+                        left_conf = sorted_cs[0]["conf"] if len(sorted_cs) >= 1 else 0
+                        right_conf = sorted_cs[1]["conf"] if len(sorted_cs) >= 2 else 0
+                        if not (left_conf >= 85 and right_conf >= 85):
+                            valid_two_digit = False
+                    else:
+                        # if not enough spatial info, be conservative
+                        valid_two_digit = False
+            # final_score after span penalty
+            final_score = total_weighted * span_penalty
+            candidate_metrics[num] = {
+                "total_weighted": total_weighted,
+                "avg_conf": avg_conf,
+                "count": count,
+                "count_ocr": count_ocr,
+                "span": span,
+                "span_penalty": span_penalty,
+                "valid_two_digit": valid_two_digit,
+                "final_score": final_score
+            }
+
+        # Logging detailed metrics in debug
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("Candidate metrics detail:")
+            for num, m in candidate_metrics.items():
+                logger.debug(f"  num={num}: {m}")
+
+        # Filter out invalid two-digit candidates (if any)
+        filtered_candidates = {}
+        for num, m in candidate_metrics.items():
+            if 10 <= num <= 31 and not m["valid_two_digit"]:
+                # penalize heavily: reduce final_score
+                m["final_score"] *= 0.4
+            filtered_candidates[num] = m["final_score"]
+
+        if not filtered_candidates:
+            logger.warning("No candidates after filtering")
+            return None
+
+        # Choose best: prefer valid two-digit numbers, then by final_score, then avg_conf
+        # create sortable list with (is_two_digit_valid_flag, final_score, avg_conf, num)
+        sortable = []
+        for num, score in filtered_candidates.items():
+            m = candidate_metrics[num]
+            is_two_valid = 1 if (10 <= num <= 31 and m["valid_two_digit"]) else 0
+            sortable.append((is_two_valid, m["final_score"], m["avg_conf"], num))
+        # sort by: is_two_valid desc, final_score desc, avg_conf desc, num desc
+        sortable.sort(key=lambda item: (-item[0], -item[1], -item[2], -item[3]))
+
+        chosen_num = int(sortable[0][3])
+        # log human friendly breakdown
+        logger.info(f\"Day candidates (detailed): { {k: candidate_metrics[k] for k in sorted(candidate_metrics.keys())} }\")\n        logger.info(f\"Selected day: {chosen_num}\")\n        return chosen_num
 
     except Exception as e:
-        logger.error(f"Error extracting day with EasyOCR: {e}")
+        logger.error(f"Error extracting day with enhanced aggregation: {e}")
         return None
+
 
 
 def _find_time_slots(img: np.ndarray) -> List[Tuple[str, str]]:

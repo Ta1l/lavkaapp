@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 OCR-модуль для нового формата скриншотов.
-Полная совместимость со старым API.
+Исправлена проблема с определением дня.
 """
 
 import os
@@ -32,21 +32,13 @@ FIXED_MONTH = 10
 
 # Расширенные паттерны для поиска времени
 TIME_PATTERNS = [
-    # Строгий паттерн HH:MM - HH:MM с разными тире
     re.compile(r"(\d{1,2}):(\d{2})\s*[-–—]\s*(\d{1,2}):(\d{2})"),
-    # С точками HH.MM - HH.MM
     re.compile(r"(\d{1,2})\.(\d{2})\s*[-–—]\s*(\d{1,2})\.(\d{2})"),
-    # С пробелами HH MM - HH MM
     re.compile(r"(\d{1,2})\s+(\d{2})\s*[-–—]\s*(\d{1,2})\s+(\d{2})"),
-    # Слитно HHMM-HHMM
     re.compile(r"(\d{2})(\d{2})\s*[-–—]\s*(\d{2})(\d{2})"),
-    # Без разделителей между часами и минутами
-    re.compile(r"(\d{1,2})(\d{2})\s*[-–—]\s*(\d{1,2})(\d{2})"),
 ]
 
-# Паттерн для поиска одиночного времени
 SINGLE_TIME_RE = re.compile(r"(\d{1,2})[:\.](\d{2})")
-
 DIGIT_RE = re.compile(r"\d{1,2}")
 
 
@@ -104,19 +96,17 @@ def _normalize_text_for_time(text: str) -> str:
     if not text:
         return ""
     
-    # Заменяем похожие символы на цифры
     replacements = {
-        "O": "0", "o": "0", "Q": "0", "О": "0", "о": "0",
-        "l": "1", "I": "1", "|": "1", "í": "1", "i": "1",
-        "S": "5", "s": "5", "З": "3", "з": "3",
+        "O": "0", "o": "0", "О": "0", "о": "0",
+        "l": "1", "I": "1", "|": "1", "í": "1",
+        "S": "5", "s": "5", "З": "3",
         "B": "8", "В": "8", "в": "8",
-        "б": "6", "Б": "6", "G": "6", "g": "9",
+        "б": "6", "Б": "6", "G": "6",
     }
     
     for old, new in replacements.items():
         text = text.replace(old, new)
     
-    # Нормализуем разделители
     text = text.replace("：", ":").replace("∶", ":").replace("․", ":")
     text = text.replace("·", ":").replace("•", ":").replace(",", ":")
     text = text.replace("–", "-").replace("—", "-").replace("−", "-")
@@ -132,7 +122,6 @@ def _extract_time_ranges_robust(text: str) -> List[Tuple[str, str]]:
     text = _normalize_text_for_time(text)
     ranges = []
     
-    # Пробуем все паттерны
     for pattern in TIME_PATTERNS:
         matches = pattern.findall(text)
         for match in matches:
@@ -148,7 +137,6 @@ def _extract_time_ranges_robust(text: str) -> List[Tuple[str, str]]:
             except Exception as e:
                 logger.debug(f"Failed to parse time match: {match}, error: {e}")
     
-    # Если не нашли диапазоны, ищем отдельные времена
     if not ranges:
         times = []
         matches = SINGLE_TIME_RE.findall(text)
@@ -160,13 +148,10 @@ def _extract_time_ranges_robust(text: str) -> List[Tuple[str, str]]:
             except:
                 pass
         
-        # Группируем попарно
         if len(times) >= 2:
             for i in range(0, len(times) - 1, 2):
                 ranges.append((times[i], times[i + 1]))
-                logger.debug(f"Paired times: {times[i]} - {times[i + 1]}")
     
-    # Уникализация
     seen = set()
     unique = []
     for r in ranges:
@@ -181,84 +166,180 @@ def _extract_time_ranges_robust(text: str) -> List[Tuple[str, str]]:
 class NewFormatSlotParser:
     def __init__(self, debug: bool = False):
         self.debug = debug
-        self.cancelled_count = 0  # Для совместимости
+        self.cancelled_count = 0
         
-    def _find_yellow_bbox(self, bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
-        """Поиск жёлтой области для определения дня."""
+    def _find_yellow_region(self, bgr: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
+        """Улучшенный поиск жёлтой/оранжевой области."""
         try:
             hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
             
-            # Более широкий диапазон для жёлтого/оранжевого
+            # Комбинируем несколько масок для разных оттенков жёлтого/оранжевого
             masks = []
-            # Жёлтый
-            masks.append(cv2.inRange(hsv, np.array([15, 50, 50]), np.array([35, 255, 255])))
-            # Оранжевый
-            masks.append(cv2.inRange(hsv, np.array([5, 50, 50]), np.array([15, 255, 255])))
+            
+            # Жёлтый диапазон
+            masks.append(cv2.inRange(hsv, np.array([20, 50, 50]), np.array([35, 255, 255])))
+            
+            # Оранжевый диапазон
+            masks.append(cv2.inRange(hsv, np.array([10, 50, 50]), np.array([20, 255, 255])))
+            
             # Светло-жёлтый
-            masks.append(cv2.inRange(hsv, np.array([20, 30, 100]), np.array([30, 255, 255])))
+            masks.append(cv2.inRange(hsv, np.array([25, 30, 100]), np.array([35, 255, 255])))
             
-            mask = cv2.bitwise_or(masks[0], masks[1])
-            if len(masks) > 2:
-                mask = cv2.bitwise_or(mask, masks[2])
+            # Тёмно-оранжевый
+            masks.append(cv2.inRange(hsv, np.array([5, 100, 100]), np.array([15, 255, 255])))
             
-            H, W = mask.shape[:2]
-            mask[int(H * 0.45):, :] = 0  # Только верхняя часть
+            # Объединяем все маски
+            combined_mask = masks[0]
+            for mask in masks[1:]:
+                combined_mask = cv2.bitwise_or(combined_mask, mask)
             
+            # Ограничиваем поиск верхней половиной изображения
+            h, w = combined_mask.shape
+            combined_mask[h//2:, :] = 0
+            
+            # Морфологические операции для очистки
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-            mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel)
+            combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel)
             
-            contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            # Находим контуры
+            contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
             if not contours:
                 return None
             
-            best = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(best)
-            if area < 200:
-                return None
+            # Ищем подходящий контур
+            best_contour = None
+            best_score = 0
             
-            return cv2.boundingRect(best)
+            for cnt in contours:
+                area = cv2.contourArea(cnt)
+                if area < 100:  # Слишком маленький
+                    continue
+                    
+                x, y, w, h = cv2.boundingRect(cnt)
+                
+                # Проверяем соотношение сторон (должно быть примерно квадратное)
+                aspect_ratio = w / float(h)
+                if aspect_ratio < 0.5 or aspect_ratio > 2.0:
+                    continue
+                
+                # Вычисляем score (предпочитаем большие области ближе к верху)
+                score = area - y * 10
+                
+                if score > best_score:
+                    best_score = score
+                    best_contour = (x, y, w, h)
+            
+            return best_contour
             
         except Exception as e:
-            logger.debug(f"_find_yellow_bbox error: {e}")
-        return None
+            logger.debug(f"_find_yellow_region error: {e}")
+            return None
     
-    def _extract_day_number(self, bgr: np.ndarray) -> Optional[int]:
-        """Извлечение номера дня из изображения."""
-        # Пробуем найти жёлтый блок
-        bbox = self._find_yellow_bbox(bgr)
-        if bbox:
-            x, y, w, h = bbox
-            pad = 10
+    def _extract_day_advanced(self, bgr: np.ndarray) -> Optional[int]:
+        """Продвинутое извлечение дня с несколькими методами."""
+        day_candidates = []
+        
+        # Метод 1: Поиск в жёлтой области
+        yellow_bbox = self._find_yellow_region(bgr)
+        if yellow_bbox:
+            x, y, w, h = yellow_bbox
+            logger.info(f"Found yellow region at ({x},{y}) size ({w}x{h})")
+            
+            # Расширяем область поиска
+            pad = 15
             roi = bgr[max(0, y-pad):min(bgr.shape[0], y+h+pad), 
                      max(0, x-pad):min(bgr.shape[1], x+w+pad)]
-        else:
-            # Берём верхнюю треть
-            h = bgr.shape[0]
-            roi = bgr[:h//3, :]
-        
-        try:
-            # OCR с разными методами
+            
+            # OCR на области
             gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
             
-            # Метод 1: простой OCR
-            text = pytesseract.image_to_string(gray, lang='eng')
-            numbers = re.findall(r'\b(\d{1,2})\b', text)
-            for num_str in numbers:
-                num = int(num_str)
-                if 1 <= num <= 31:
-                    return num
+            # Пробуем разные методы обработки
+            for method in ['direct', 'thresh', 'adaptive']:
+                if method == 'direct':
+                    processed = gray
+                elif method == 'thresh':
+                    _, processed = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                else:  # adaptive
+                    processed = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                                    cv2.THRESH_BINARY, 11, 2)
+                
+                # Увеличиваем для лучшего OCR
+                processed = cv2.resize(processed, None, fx=2, fy=2, interpolation=cv2.INTER_CUBIC)
+                
+                # OCR только цифры
+                config = "--psm 8 -c tessedit_char_whitelist=0123456789"
+                text = pytesseract.image_to_string(processed, config=config, lang='eng')
+                
+                numbers = re.findall(r'\d+', text)
+                for num_str in numbers:
+                    num = int(num_str)
+                    if 1 <= num <= 31:
+                        day_candidates.append(num)
+                        logger.debug(f"Method 1.{method}: found day {num}")
+        
+        # Метод 2: Поиск по всей верхней части изображения
+        top_third = bgr[:bgr.shape[0]//3, :]
+        
+        # OCR с разными конфигурациями
+        configs = [
+            "--psm 6",  # Uniform block
+            "--psm 11",  # Sparse text
+            "--psm 12",  # Sparse text with OSD
+        ]
+        
+        for config in configs:
+            try:
+                gray = cv2.cvtColor(top_third, cv2.COLOR_BGR2GRAY)
+                text = pytesseract.image_to_string(gray, config=config, lang='eng+rus')
+                
+                # Ищем числа в контексте (например, "14 октября" или просто "14")
+                # Паттерны для поиска дня
+                patterns = [
+                    r'\b(\d{1,2})\s*(?:октября|october|окт)',  # "14 октября"
+                    r'(?:октября|october|окт)\s*(\d{1,2})\b',  # "октября 14"
+                    r'\b(\d{1,2})\b',  # Просто число
+                ]
+                
+                for pattern in patterns:
+                    matches = re.findall(pattern, text, re.IGNORECASE)
+                    for match in matches:
+                        if isinstance(match, tuple):
+                            match = match[0] if match[0] else match[1]
+                        try:
+                            num = int(match)
+                            if 1 <= num <= 31:
+                                day_candidates.append(num)
+                                logger.debug(f"Method 2.{config}: found day {num}")
+                        except:
+                            pass
+            except Exception as e:
+                logger.debug(f"Method 2 error with config {config}: {e}")
+        
+        # Метод 3: Использование image_to_data для точного поиска
+        try:
+            processed = _preprocess_for_ocr(top_third)
+            data = pytesseract.image_to_data(processed, output_type=pytesseract.Output.DICT, lang='eng')
             
-            # Метод 2: с предобработкой
-            processed = _preprocess_for_ocr(roi)
-            text = pytesseract.image_to_string(processed, lang='eng')
-            numbers = re.findall(r'\b(\d{1,2})\b', text)
-            for num_str in numbers:
-                num = int(num_str)
-                if 1 <= num <= 31:
-                    return num
-                    
+            for i, text in enumerate(data['text']):
+                if text and text.strip().isdigit():
+                    num = int(text.strip())
+                    if 1 <= num <= 31:
+                        conf = int(data['conf'][i])
+                        if conf > 30:  # Минимальная уверенность
+                            day_candidates.append(num)
+                            logger.debug(f"Method 3: found day {num} with confidence {conf}")
         except Exception as e:
-            logger.debug(f"Day extraction error: {e}")
+            logger.debug(f"Method 3 error: {e}")
+        
+        # Выбираем наиболее часто встречающийся день
+        if day_candidates:
+            from collections import Counter
+            counter = Counter(day_candidates)
+            most_common = counter.most_common(1)[0][0]
+            logger.info(f"Day candidates: {day_candidates}, selected: {most_common}")
+            return most_common
         
         return None
     
@@ -269,86 +350,64 @@ class NewFormatSlotParser:
             logger.error("Cannot read image")
             return []
         
-        # 1. Извлекаем день
-        day = self._extract_day_number(img)
+        logger.info(f"Processing image with shape: {img.shape}")
+        
+        # 1. Извлекаем день с улучшенным методом
+        day = self._extract_day_advanced(img)
+        
         if day is None:
-            logger.warning("Day not detected, using default: 1")
-            day = 1
+            # Fallback: пробуем использовать текущий день
+            current_day = datetime.now().day
+            if 1 <= current_day <= 31:
+                logger.warning(f"Day not detected, using current day: {current_day}")
+                day = current_day
+            else:
+                logger.warning("Day not detected, using default: 14")
+                day = 14  # Более разумный default для октября
         else:
-            logger.info(f"Detected day: {day}")
+            logger.info(f"Successfully detected day: {day}")
         
         # 2. Формируем дату
         try:
             slot_date = date(FIXED_YEAR, FIXED_MONTH, day)
             iso_date = slot_date.isoformat()
+            logger.info(f"Using date: {iso_date}")
         except:
             logger.error(f"Invalid day: {day}")
             return []
         
-        # 3. Ищем временные слоты разными методами
+        # 3. Ищем временные слоты
         all_ranges = []
         
-        # Метод 1: OCR всего изображения
+        # Фокусируемся на нижней части изображения (где обычно слоты)
+        h = img.shape[0]
+        bottom_part = img[h//3:, :]
+        
+        # Метод 1: Простой OCR
         try:
-            pil = Image.fromarray(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            text_full = pytesseract.image_to_string(pil, lang='eng+rus')
-            ranges = _extract_time_ranges_robust(text_full)
-            all_ranges.extend(ranges)
+            pil = Image.fromarray(cv2.cvtColor(bottom_part, cv2.COLOR_BGR2RGB))
+            text = pytesseract.image_to_string(pil, lang='eng+rus')
+            ranges = _extract_time_ranges_robust(text)
             if ranges:
-                logger.info(f"Method 1 (full): found {len(ranges)} ranges")
+                all_ranges.extend(ranges)
+                logger.info(f"Found {len(ranges)} time ranges with simple OCR")
         except Exception as e:
-            logger.debug(f"Method 1 failed: {e}")
+            logger.debug(f"Simple OCR failed: {e}")
         
-        # Метод 2: Нижняя часть (где обычно слоты)
+        # Метод 2: С предобработкой
         if not all_ranges:
             try:
-                h = img.shape[0]
-                bottom = img[h//3:, :]
-                pil = Image.fromarray(cv2.cvtColor(bottom, cv2.COLOR_BGR2RGB))
-                text_bottom = pytesseract.image_to_string(pil, lang='eng+rus')
-                ranges = _extract_time_ranges_robust(text_bottom)
-                all_ranges.extend(ranges)
-                if ranges:
-                    logger.info(f"Method 2 (bottom): found {len(ranges)} ranges")
-            except Exception as e:
-                logger.debug(f"Method 2 failed: {e}")
-        
-        # Метод 3: С предобработкой
-        if not all_ranges:
-            try:
-                processed = _preprocess_for_ocr(img)
+                processed = _preprocess_for_ocr(bottom_part)
                 pil = Image.fromarray(processed)
-                text_proc = pytesseract.image_to_string(pil, lang='eng')
-                ranges = _extract_time_ranges_robust(text_proc)
-                all_ranges.extend(ranges)
+                text = pytesseract.image_to_string(pil, lang='eng')
+                ranges = _extract_time_ranges_robust(text)
                 if ranges:
-                    logger.info(f"Method 3 (processed): found {len(ranges)} ranges")
+                    all_ranges.extend(ranges)
+                    logger.info(f"Found {len(ranges)} time ranges with preprocessing")
             except Exception as e:
-                logger.debug(f"Method 3 failed: {e}")
+                logger.debug(f"Preprocessed OCR failed: {e}")
         
-        # Метод 4: image_to_data для точного извлечения
-        if not all_ranges:
-            try:
-                processed = _preprocess_for_ocr(img)
-                pil = Image.fromarray(processed)
-                data = pytesseract.image_to_data(pil, output_type=pytesseract.Output.DICT, lang='eng')
-                
-                # Собираем весь текст
-                text_parts = []
-                for i, txt in enumerate(data['text']):
-                    if txt and txt.strip():
-                        text_parts.append(txt.strip())
-                
-                full_text = " ".join(text_parts)
-                ranges = _extract_time_ranges_robust(full_text)
-                all_ranges.extend(ranges)
-                if ranges:
-                    logger.info(f"Method 4 (data): found {len(ranges)} ranges")
-                    
-            except Exception as e:
-                logger.debug(f"Method 4 failed: {e}")
-        
-        # Уникализация
+        # Формируем результат
         seen = set()
         slots = []
         for start, end in all_ranges:
@@ -360,20 +419,21 @@ class NewFormatSlotParser:
                     "endTime": end,
                     "assignToSelf": True
                 })
+                logger.info(f"Added slot: {iso_date} {start}-{end}")
         
-        logger.info(f"Total found {len(slots)} unique slot(s) for {iso_date}")
+        logger.info(f"Total found {len(slots)} unique slot(s)")
         return slots
 
 
-# --------- Класс MemorySlotParser для полной совместимости ---------
+# --------- Класс MemorySlotParser для совместимости ---------
 class MemorySlotParser:
-    """Парсер для работы со скриншотами из памяти. Полная совместимость со старым API."""
+    """Парсер для работы со скриншотами из памяти."""
     
     def __init__(self, debug: bool = False):
         self.debug = debug
         self.parser = NewFormatSlotParser(debug=debug)
         
-        # Атрибуты для совместимости со старым кодом
+        # Все атрибуты для совместимости
         self.base_path = ""
         self.cancelled_count = 0
         self.accumulated_slots = []
@@ -395,18 +455,15 @@ class MemorySlotParser:
         }
         
     def process_screenshot_from_memory(self, image_bytes: BytesIO, is_last: bool = False) -> List[Dict]:
-        """Обработка одного скриншота из памяти (основной метод для совместимости)."""
+        """Обработка одного скриншота из памяти."""
         try:
             logger.info(f"Processing screenshot from memory, is_last={is_last}")
             
-            # Обрабатываем изображение
             slots = self.parser.process_image(image_bytes)
             
-            # Накапливаем слоты
             self.accumulated_slots.extend(slots)
             self.screenshots_count += 1
             
-            # Если последний скриншот, возвращаем все накопленные
             if is_last:
                 return self.get_all_slots()
             
@@ -440,7 +497,7 @@ class MemorySlotParser:
             return []
     
     def preprocess_image_array(self, image_array: np.ndarray) -> Optional[np.ndarray]:
-        """Предобработка изображения (для совместимости)."""
+        """Предобработка изображения."""
         try:
             return _preprocess_for_ocr(image_array)
         except Exception as e:
@@ -470,14 +527,13 @@ class MemorySlotParser:
         """Алиас для clear."""
         self.clear()
     
-    # Методы из старого кода для полной совместимости
     def parse_time_in_text(self, text: str) -> Optional[Tuple[str, str]]:
-        """Поиск времени в тексте (для совместимости)."""
+        """Поиск времени в тексте."""
         ranges = _extract_time_ranges_robust(text)
         return ranges[0] if ranges else None
     
     def _extract_lines_from_data(self, data: Dict) -> List[Dict]:
-        """Извлечение строк из OCR данных (для совместимости)."""
+        """Извлечение строк из OCR данных."""
         try:
             groups = {}
             for i in range(len(data.get("text", []))):
@@ -517,7 +573,6 @@ class MemorySlotParser:
         return self.last_error
 
 
-# --------- Класс SlotParser для совместимости ---------
 class SlotParser:
     """Класс для обработки папки со скриншотами."""
     
@@ -525,8 +580,6 @@ class SlotParser:
         self.base_path = base_path
         self.parser = NewFormatSlotParser(debug=debug)
         self.cancelled_count = 0
-        
-        # Атрибуты из старого кода
         self.months = {
             "января": 1, "февраля": 2, "марта": 3, "апреля": 4,
             "мая": 5, "июня": 6, "июля": 7, "августа": 8,
@@ -559,7 +612,6 @@ class SlotParser:
             except Exception as e:
                 logger.error(f"Error processing {filepath}: {e}")
         
-        # Уникализация
         seen = set()
         unique = []
         for slot in all_slots:

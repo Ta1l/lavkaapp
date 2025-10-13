@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 OCR-модуль для извлечения слотов из скриншотов.
-Упрощенная и надежная версия.
+Версия с улучшенным извлечением дня из желтого квадрата.
 """
 
 import os
@@ -11,6 +11,7 @@ import logging
 from datetime import date
 from typing import List, Dict, Optional, Tuple, Any
 from io import BytesIO
+from collections import Counter
 
 import cv2
 import numpy as np
@@ -132,153 +133,228 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
 
 def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Optional[int]:
     """
-    Упрощенное извлечение дня из желтого квадрата.
-    Использует несколько методов OCR и выбирает наиболее вероятный результат.
+    Улучшенное извлечение дня из желтого квадрата.
+    Принимает: img (BGR), box (x, y, w, h).
+    Возвращает: int (1..31) или None.
+    Подход:
+     - Crop + padding
+     - LAB -> L канал, bilateral filter, CLAHE
+     - adaptive threshold (несколько масштабов)
+     - попытки OCR с разными PSM и whitelist
+     - сегментация контуров: выбираем крупные символы (игнорируем мелкие после '/')
+     - комбинируем кандидаты и выбираем наиболее частый/логичный
     """
     try:
         x, y, w, h = box
-        
-        # Вырезаем с небольшим отступом
-        padding = 10
+
+        # Padding, но не слишком большой
+        padding = max(6, int(min(w, h) * 0.15))
         x1 = max(0, x - padding)
         y1 = max(0, y - padding)
         x2 = min(img.shape[1], x + w + padding)
         y2 = min(img.shape[0], y + h + padding)
-        
+
         roi = img[y1:y2, x1:x2]
-        
         if roi.size == 0:
+            logger.warning("Empty ROI for yellow box")
             return None
-        
-        # Конвертируем в grayscale
-        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        
-        # Увеличиваем изображение
-        scale = 3.0
-        width = int(gray.shape[1] * scale)
-        height = int(gray.shape[0] * scale)
-        gray = cv2.resize(gray, (width, height), interpolation=cv2.INTER_CUBIC)
-        
-        candidates = []
-        
-        # Метод 1: Простой OCR с инверсией (темный текст на светлом фоне)
-        _, thresh_inv = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        text = pytesseract.image_to_string(thresh_inv, config='--psm 8 -c tessedit_char_whitelist=0123456789')
-        logger.debug(f"OCR (inverted): '{text.strip()}'")
-        
-        # Извлекаем все числа
-        numbers = re.findall(r'\d+', text)
-        for num_str in numbers:
-            # Если число длинное (например, "412" из "4/12"), берем первые 1-2 цифры
-            if len(num_str) > 2:
-                # Пробуем первые две цифры
-                if len(num_str) >= 2:
-                    test_num = int(num_str[:2])
-                    if 1 <= test_num <= 31:
-                        candidates.append(test_num)
-                # И первую цифру
-                test_num = int(num_str[0])
-                if 1 <= test_num <= 31:
-                    candidates.append(test_num)
-            else:
-                num = int(num_str)
-                if 1 <= num <= 31:
-                    candidates.append(num)
-        
-        # Метод 2: OCR без инверсии
-        _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-        text = pytesseract.image_to_string(thresh, config='--psm 8 -c tessedit_char_whitelist=0123456789')
-        logger.debug(f"OCR (normal): '{text.strip()}'")
-        
-        numbers = re.findall(r'\d+', text)
-        for num_str in numbers:
-            if len(num_str) > 2:
-                if len(num_str) >= 2:
-                    test_num = int(num_str[:2])
-                    if 1 <= test_num <= 31:
-                        candidates.append(test_num)
-                test_num = int(num_str[0])
-                if 1 <= test_num <= 31:
-                    candidates.append(test_num)
-            else:
-                num = int(num_str)
-                if 1 <= num <= 31:
-                    candidates.append(num)
-        
-        # Метод 3: PSM 7 (одна строка текста)
-        text = pytesseract.image_to_string(thresh_inv, config='--psm 7 -c tessedit_char_whitelist=0123456789/')
-        logger.debug(f"OCR (psm 7): '{text.strip()}'")
-        
-        # Если есть слэш, берем число до него
-        if '/' in text:
-            parts = text.split('/')
-            if parts[0]:
-                numbers = re.findall(r'\d+', parts[0])
-                for num_str in numbers:
-                    if len(num_str) <= 2:
-                        num = int(num_str)
-                        if 1 <= num <= 31:
-                            candidates.append(num)
-        else:
-            numbers = re.findall(r'\d+', text)
-            for num_str in numbers:
-                if len(num_str) <= 2:
-                    num = int(num_str)
-                    if 1 <= num <= 31:
-                        candidates.append(num)
-        
-        # Метод 4: CLAHE для улучшения контраста
+
+        # Преобразование в LAB -> берем L (яркость)
+        lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+
+        # Сглаживание, сохраняя края
+        l = cv2.bilateralFilter(l, d=9, sigmaColor=75, sigmaSpace=75)
+
+        # CLAHE (локальное усиление контраста)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        enhanced = clahe.apply(gray)
-        _, thresh_enhanced = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        
-        text = pytesseract.image_to_string(thresh_enhanced, config='--psm 8')
-        logger.debug(f"OCR (CLAHE): '{text.strip()}'")
-        
-        # Более гибкий поиск чисел
-        # Ищем паттерны вида "25", "25/", "25 ", но не "4/12"
-        patterns = [
-            r'^(\d{1,2})\s*[/\s]',  # Число в начале с разделителем
-            r'^(\d{1,2})$',         # Просто число
-            r'(\d{1,2})\s+\d',      # Число с пробелом перед другим числом
-        ]
-        
-        for pattern in patterns:
-            match = re.search(pattern, text.strip())
-            if match:
-                num = int(match.group(1))
-                if 1 <= num <= 31:
-                    candidates.append(num)
-        
+        l = clahe.apply(l)
+
+        # Нормализуем яркость и увеличим изображение для OCR
+        def resize_for_ocr(img_gray, scale):
+            w0 = max(20, int(img_gray.shape[1] * scale))
+            h0 = max(20, int(img_gray.shape[0] * scale))
+            return cv2.resize(img_gray, (w0, h0), interpolation=cv2.INTER_CUBIC)
+
+        candidates: List[int] = []
+
+        # Функция: запустить pytesseract с несколькими конфигами на заданном изображении
+        def ocr_trials(img_gray):
+            texts = []
+            # Простая бинаризация (адаптивная)
+            try:
+                th_adapt = cv2.adaptiveThreshold(img_gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                                 cv2.THRESH_BINARY, 11, 2)
+            except Exception:
+                _, th_adapt = cv2.threshold(img_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+            # Инверсия если фон тёмный (чтобы получить тёмный текст на светлом фоне)
+            mean_val = int(np.mean(img_gray))
+            if mean_val < 120:
+                th_used = cv2.bitwise_not(th_adapt)
+            else:
+                th_used = th_adapt
+
+            # Попробуем несколько PSM и whitelist
+            configs = [
+                '--psm 8 -c tessedit_char_whitelist=0123456789/',
+                '--psm 7 -c tessedit_char_whitelist=0123456789/',
+                '--psm 10 -c tessedit_char_whitelist=0123456789'  # single char
+            ]
+
+            for cfg in configs:
+                try:
+                    text = pytesseract.image_to_string(th_used, config=cfg)
+                    if text:
+                        texts.append(text.strip())
+                except Exception as e:
+                    logger.debug(f"OCR attempt failed: {e}")
+            return texts, th_used
+
+        # Попробовать на нескольких масштабах (2x, 3x, 4x)
+        scales = [2.0, 3.0, 4.0]
+        ocr_texts = []
+        last_thresh = None
+        for s in scales:
+            gray_resized = resize_for_ocr(l, s)
+            texts, th_used = ocr_trials(gray_resized)
+            ocr_texts.extend(texts)
+            last_thresh = th_used
+
+        # Также используем прямой OCR на исходном усиленном изображении (без масштабирования)
+        try:
+            fallback_text = pytesseract.image_to_string(l, config='--psm 6 -c tessedit_char_whitelist=0123456789/')
+            if fallback_text:
+                ocr_texts.append(fallback_text.strip())
+        except Exception:
+            pass
+
+        logger.debug(f"OCR raw candidates: {ocr_texts}")
+
+        # 1) Прямой парсинг из полученных строк
+        for raw in ocr_texts:
+            if not raw:
+                continue
+            # Нормализуем пробелы и заменяем похожие буквы
+            r = raw.replace(' ', '').replace('O', '0').replace('o', '0').replace('l', '1')
+            # Если есть '/', берем часть слева (обычно день)
+            if '/' in r:
+                left = r.split('/')[0]
+                m = re.findall(r'\d{1,2}', left)
+                for mg in m:
+                    try:
+                        val = int(mg)
+                        if 1 <= val <= 31:
+                            candidates.append(val)
+                    except:
+                        continue
+            else:
+                m = re.findall(r'\d{1,2}', r)
+                for mg in m:
+                    try:
+                        val = int(mg)
+                        if 1 <= val <= 31:
+                            candidates.append(val)
+                    except:
+                        continue
+
+        # 2) Контурный анализ — выделяем крупные символы, чтобы отделить основной (день) от мелких (например '12' справа)
+        try:
+            if last_thresh is None:
+                gray0 = l.copy()
+                _, last_thresh = cv2.threshold(gray0, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            # Найдём контуры на последнем пороговом изображении
+            contours, _ = cv2.findContours(last_thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            rects = []
+            for cnt in contours:
+                rx, ry, rw, rh = cv2.boundingRect(cnt)
+                area = rw * rh
+                # Фильтруем слишком маленькие объекты
+                if area < 20 or rw < 6 or rh < 8:
+                    continue
+                rects.append((rx, ry, rw, rh, area))
+            if rects:
+                # Сортируем по x (лево->право)
+                rects.sort(key=lambda r: r[0])
+                # Рассчитаем медиану высот — это ориентир «крупного шрифта»
+                heights = [r[3] for r in rects]
+                med_h = int(np.median(heights))
+                # Выбираем те rects, высота которых >= 0.7 * median (крупные цифры)
+                big_rects = [r for r in rects if r[3] >= 0.7 * med_h]
+                # Если большие прямоугольники есть, пытаемся OCR по ним по очереди (слева направо)
+                if big_rects:
+                    big_rects.sort(key=lambda r: r[0])
+                    # объединяем bbox первых 1-2 больших символов (на случай двузначного дня)
+                    # берем левую группу: все последовательные прямоугольники, пока расстояние между ними небольшое
+                    groups = []
+                    current_group = [big_rects[0]]
+                    for r in big_rects[1:]:
+                        prev = current_group[-1]
+                        # если следующий рядом (по x) — считаем частью той же группы
+                        if r[0] - (prev[0] + prev[2]) < max(10, int(prev[2] * 0.8)):
+                            current_group.append(r)
+                        else:
+                            groups.append(current_group)
+                            current_group = [r]
+                    groups.append(current_group)
+                    # Проанализируем первые две группы (левые)
+                    take_groups = groups[:2]
+                    for g in take_groups:
+                        gx1 = min([r[0] for r in g])
+                        gy1 = min([r[1] for r in g])
+                        gx2 = max([r[0] + r[2] for r in g])
+                        gy2 = max([r[1] + r[3] for r in g])
+                        # небольшой отступ внутри ROI
+                        pad = 2
+                        gx1 = max(0, gx1 - pad); gy1 = max(0, gy1 - pad)
+                        gx2 = min(last_thresh.shape[1], gx2 + pad); gy2 = min(last_thresh.shape[0], gy2 + pad)
+                        crop = last_thresh[gy1:gy2, gx1:gx2]
+                        # увеличим и OCR для этой части
+                        crop_up = resize_for_ocr(crop, 3.0)
+                        try:
+                            txt = pytesseract.image_to_string(crop_up, config='--psm 7 -c tessedit_char_whitelist=0123456789')
+                            txt = txt.strip()
+                            if txt:
+                                nums = re.findall(r'\d{1,2}', txt)
+                                for ns in nums:
+                                    v = int(ns)
+                                    if 1 <= v <= 31:
+                                        candidates.append(v)
+                        except Exception:
+                            continue
+        except Exception as e:
+            logger.debug(f"Contour analysis failed: {e}")
+
+        logger.debug(f"Day numeric candidates before selection: {candidates}")
+
+        # Выбор финального кандидата: наиболее частый, с приоритетом двузначных (10-31)
         if candidates:
-            # Выбираем наиболее часто встречающееся число
-            from collections import Counter
-            counter = Counter(candidates)
-            most_common = counter.most_common(1)[0][0]
-            logger.info(f"Day candidates: {candidates}, selected: {most_common}")
+            cnt = Counter(candidates)
+            # Попробуем сначала взять наиболее частый двузначный (если есть)
+            for num, _ in cnt.most_common():
+                if 10 <= num <= 31:
+                    logger.info(f"Selected day (two-digit priority): {num}; candidates: {candidates}")
+                    return num
+            # Иначе — наиболее частый любой допустимый
+            most_common = cnt.most_common(1)[0][0]
+            logger.info(f"Selected day: {most_common}; candidates: {candidates}")
             return most_common
-        
-        # Последняя попытка: весь текст без ограничений
-        text = pytesseract.image_to_string(gray)
-        logger.debug(f"OCR (fallback): '{text.strip()}'")
-        
-        # Ищем двузначные числа от 10 до 31 (они точно не могут быть частью "4/12")
-        numbers = re.findall(r'\b([12][0-9]|3[01])\b', text)
-        if numbers:
-            num = int(numbers[0])
-            logger.info(f"Fallback found day: {num}")
-            return num
-        
-        # Ищем однозначные
-        numbers = re.findall(r'\b([1-9])\b', text)
-        if numbers:
-            num = int(numbers[0])
-            logger.info(f"Fallback found day: {num}")
-            return num
-        
-        logger.warning("No valid day found in yellow box")
+
+        # Fallback: поиск по всему тексту (ещё одна попытка)
+        try:
+            final_text = pytesseract.image_to_string(l, config='--psm 6')
+            nums = re.findall(r'\d{1,2}', final_text)
+            for ns in nums:
+                v = int(ns)
+                if 1 <= v <= 31:
+                    logger.info(f"Fallback OCR found day: {v}")
+                    return v
+        except Exception:
+            pass
+
+        logger.warning("No valid day found in yellow box after all attempts")
         return None
-        
+
     except Exception as e:
         logger.error(f"Error extracting day: {e}")
         return None
@@ -364,7 +440,7 @@ class NewFormatSlotParser:
             logger.error("Yellow box not found")
             return []
         
-        # 3. Извлекаем день (упрощенный метод)
+        # 3. Извлекаем день (улучшенный метод)
         day = _extract_day_simple(img, yellow_box)
         
         if day is None:

@@ -133,83 +133,96 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
 
 def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Optional[int]:
     """
-    Надёжное извлечение дня из жёлтого квадрата (оптимизировано для чёрного шрифта на жёлтом фоне).
-    Возвращает int 1..31 или None.
-    Подход:
-      - crop с padding
-      - несколько масок (HSV-жёлтый/не-жёлтый, V-канал инвертированный)
-      - морфология + дилатация для усиления тонких штрихов
-      - OCR через image_to_data на каждом варианте
-      - агрегация кандидатов по суммарной confidence
+    Надёжное извлечение дня из жёлтого квадрата, ориентировано на чёрный шрифт на желтом фоне.
+    Возвращает int (1..31) или None.
     """
     try:
         x, y, w, h = box
-        # padding ~15% но не слишком большой
-        padding = max(6, int(min(w, h) * 0.15))
+        padding = max(6, int(min(w, h) * 0.18))
         x1 = max(0, x - padding)
         y1 = max(0, y - padding)
         x2 = min(img.shape[1], x + w + padding)
         y2 = min(img.shape[0], y + h + padding)
 
-        roi_bgr = img[y1:y2, x1:x2].copy()
-        if roi_bgr.size == 0:
+        roi = img[y1:y2, x1:x2].copy()
+        if roi.size == 0:
             logger.warning("Empty ROI for yellow box")
             return None
 
-        # --- Подготовка нескольких предобработок ---
-        preprocessed = {}
-
-        # 1) L-CLAHE (LAB -> L)
-        lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        l = cv2.bilateralFilter(l, d=7, sigmaColor=75, sigmaSpace=75)
+        # ---------- 1. Предобработка: L-CLAHE и V-inv ----------
+        lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+        l_channel = lab[:, :, 0]
+        l_blur = cv2.bilateralFilter(l_channel, d=7, sigmaColor=75, sigmaSpace=75)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l_clahe = clahe.apply(l)
-        preprocessed["l_clahe"] = l_clahe
+        l_clahe = clahe.apply(l_blur)
 
-        # 2) V-channel inverted (чёрный текст -> белый на тёмном фоне)
-        hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
         _, _, v = cv2.split(hsv)
         v_blur = cv2.GaussianBlur(v, (3, 3), 0)
         _, v_inv = cv2.threshold(v_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-        # усиление тонких штрихов
-        kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        v_inv = cv2.morphologyEx(v_inv, cv2.MORPH_CLOSE, kernel, iterations=1)
-        v_inv = cv2.dilate(v_inv, kernel, iterations=1)
-        preprocessed["v_inv"] = v_inv
 
-        # 3) mask = dark pixels inside yellow region (цветовая сегментация)
+        # ---------- 2. Выделение вертикальных штрихов (Sobel X -> усиление '1') ----------
+        sobelx = cv2.Sobel(l_clahe, cv2.CV_64F, 1, 0, ksize=3)
+        sobelx = np.absolute(sobelx)
+        sobelx = np.uint8(255.0 * (sobelx / (sobelx.max() + 1e-9)))
+        _, sob_mask = cv2.threshold(sobelx, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        # ---------- 3. Комбинация масок и морфология ----------
+        # Маска "не-жёлтый" чтобы исключить желтые артефакты
         lower_y = np.array([10, 80, 80])
         upper_y = np.array([40, 255, 255])
         yellow_mask = cv2.inRange(hsv, lower_y, upper_y)
         non_yellow = cv2.bitwise_not(yellow_mask)
-        # соединяем с v_inv чтобы убрать артефакты вокруг
-        combined = cv2.bitwise_and(v_inv, non_yellow)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_OPEN, kernel, iterations=1)
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel, iterations=1)
-        preprocessed["combined"] = combined
 
-        # 4) адаптивный порог от L-CLAHE
+        kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))  # вертикальное усиление
+        kernel_sq = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
+
+        combined = cv2.bitwise_or(v_inv, sob_mask)
+        combined = cv2.bitwise_and(combined, non_yellow)
+        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_sq, iterations=1)
+        combined = cv2.dilate(combined, kernel_v, iterations=1)  # усиливаем тонкие вертикали
+
+        # Еще один вариант: адаптивный порог от L-CLAHE (инвертирован)
         try:
             th_adapt = cv2.adaptiveThreshold(l_clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                             cv2.THRESH_BINARY_INV, 11, 2)
-            preprocessed["th_adapt"] = th_adapt
         except Exception:
-            _, th_ot = cv2.threshold(l_clahe, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            preprocessed["th_adapt"] = th_ot
+            _, th_adapt = cv2.threshold(l_clahe, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
 
-        # расширяем набор входов: разные масштабы
-        scales = [1.5, 2.5, 3.5]
+        # Подготовим набор изображений для OCR
+        variants = {
+            "combined": combined,
+            "v_inv": v_inv,
+            "l_clahe": l_clahe,
+            "th_adapt": th_adapt
+        }
 
-        # --- OCR и сбор кандидатов ---
-        candidates = []  # list of (num:int, score:float, source:str)
+        # ---------- 4. Подготовка шаблонов цифр для template-matching ----------
+        def _make_digit_templates(size=64):
+            templates = {}
+            for d in range(10):
+                tpl = np.ones((size, size), dtype=np.uint8) * 255
+                text = str(d)
+                # Подобрать масштаб и толщину под UI-цифры
+                font_scale = size / 50.0
+                thickness = max(1, int(font_scale))
+                # центрируем текст
+                ((tw, th), _) = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                org = ((size - tw) // 2, (size + th) // 2)
+                cv2.putText(tpl, text, org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,), thickness, cv2.LINE_AA)
+                _, tpl_bin = cv2.threshold(tpl, 200, 255, cv2.THRESH_BINARY)
+                templates[d] = tpl_bin
+            return templates
 
-        def collect_from_img(img_gray, source_name):
-            # масштабируем для OCR (чем крупнее — тем лучше для мелкого UI)
-            h0, w0 = img_gray.shape
+        templates = _make_digit_templates(64)
+
+        # helper: OCR via image_to_data (возвращаем список (num, conf))
+        def ocr_candidates_from_image(gray_img, source_name):
+            results = []
+            h0, w0 = gray_img.shape
+            # масштабируем для OCR
             scale = max(1.0, min(4.0, 300.0 / max(h0, w0)))
-            img_r = cv2.resize(img_gray, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_CUBIC)
-            # пробуем несколько psm и whitelist
+            img_r = cv2.resize(gray_img, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_CUBIC)
             cfgs = [
                 '--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789/',
                 '--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789/',
@@ -217,86 +230,183 @@ def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Opti
             ]
             for cfg in cfgs:
                 try:
-                    # используем image_to_data — получаем confidence для каждого токена
                     data = pytesseract.image_to_data(img_r, config=cfg, output_type=pytesseract.Output.DICT)
                     n = len(data.get("text", []))
                     for i in range(n):
                         txt = (data["text"][i] or "").strip()
-                        conf = int(data["conf"][i]) if str(data["conf"][i]).isdigit() else -1
+                        conf_raw = data.get("conf", [])[i] if i < len(data.get("conf", [])) else '-1'
+                        try:
+                            conf = int(conf_raw) if str(conf_raw).lstrip('-').isdigit() else -1
+                        except:
+                            conf = -1
                         if not txt:
                             continue
-                        # нормализуем и ищем числа (особенно учитываем '/')
-                        txt_norm = txt.replace(' ', '').replace('O', '0').replace('o','0').replace('l','1').replace('I','1')
+                        txt_norm = txt.replace(' ', '').replace('O', '0').replace('o', '0').replace('l', '1').replace('I', '1')
                         if '/' in txt_norm:
                             left = txt_norm.split('/')[0]
-                            m = re.findall(r'\d{1,2}', left)
-                            for mg in m:
-                                val = int(mg)
+                            for m in re.findall(r'\d{1,2}', left):
+                                val = int(m)
                                 if 1 <= val <= 31:
-                                    candidates.append((val, max(conf, 0), f"{source_name}[{cfg}]"))
+                                    results.append((val, max(conf, 0), f"{source_name}[{cfg}]"))
                         else:
-                            m = re.findall(r'\d{1,2}', txt_norm)
-                            for mg in m:
-                                val = int(mg)
+                            for m in re.findall(r'\d{1,2}', txt_norm):
+                                val = int(m)
                                 if 1 <= val <= 31:
-                                    candidates.append((val, max(conf, 0), f"{source_name}[{cfg}]"))
+                                    results.append((val, max(conf, 0), f"{source_name}[{cfg}]"))
                 except Exception as e:
                     logger.debug(f"OCR fail {source_name} cfg={cfg}: {e}")
+            return results
 
-        # direct runs on preprocessed images
-        for name, im in preprocessed.items():
-            # run on base and on scaled variants
-            collect_from_img(im, name)
-            for s in scales:
-                h0, w0 = im.shape[:2]
-                ir = cv2.resize(im, (int(w0 * s), int(h0 * s)), interpolation=cv2.INTER_CUBIC)
-                collect_from_img(ir, f"{name}_x{s}")
-
-        # еще одна стратегия: connected components на combined, попытки OCR на каждой компоненте
-        try:
-            blobs_img = preprocessed.get("combined", preprocessed.get("v_inv"))
-            if blobs_img is not None:
-                num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(blobs_img, connectivity=8)
-                for i in range(1, num_labels):
-                    x_b, y_b, w_b, h_b, area_b = stats[i]
-                    if area_b < 10 or w_b < 4 or h_b < 6:
+        # helper: template matching for a crop, returns (best_digit, score)
+        def template_match_digit(crop_bin):
+            # ensure binary 0/255
+            _, crop_thr = cv2.threshold(crop_bin, 128, 255, cv2.THRESH_BINARY)
+            ch, cw = crop_thr.shape
+            best_digit = None
+            best_score = -1.0
+            for d, tpl in templates.items():
+                # resize tpl to crop size or crop to tpl size; we'll resize crop to tpl size
+                try:
+                    crop_r = cv2.resize(crop_thr, (tpl.shape[1], tpl.shape[0]), interpolation=cv2.INTER_AREA)
+                    # matchTemplate expects source larger than template; we have equal sizes but it works
+                    res = cv2.matchTemplate(255 - crop_r, 255 - tpl, cv2.TM_CCOEFF_NORMED)
+                    if res is None:
                         continue
-                    crop = blobs_img[y_b:y_b+h_b, x_b:x_b+w_b]
-                    # pad slightly
-                    pad = 2
-                    crop_p = cv2.copyMakeBorder(crop, pad, pad, pad, pad, cv2.BORDER_CONSTANT, value=0)
-                    # invert to white background for some OCR configs
-                    crop_inv = cv2.bitwise_not(crop_p)
-                    # try OCR on crop_inv
-                    collect_from_img(crop_inv, f"cc_{i}")
-        except Exception:
-            logger.debug("Connected components pass failed")
+                    score = float(res.max())
+                    if score > best_score:
+                        best_score = score
+                        best_digit = d
+                except Exception as e:
+                    continue
+            return best_digit, best_score
 
-        # --- Выбор финального кандидата ---
-        if candidates:
-            # агрегируем по числу: суммируем confidence
-            score_map = {}
-            for num, conf, src in candidates:
-                score_map.setdefault(num, 0)
-                score_map[num] += max(0, conf)
-            # отдаём приоритет двузначным (10-31), затем по суммарной confidence
-            sorted_nums = sorted(score_map.items(), key=lambda kv: (- (10 <= kv[0] <= 31), -kv[1], -kv[0]))
-            chosen_num = sorted_nums[0][0]
-            logger.info(f"Day candidates (agg): {score_map}, selected: {chosen_num}")
-            return chosen_num
+        # ---------- 5. Собираем кандидатов: из OCR по вариантам + connected components ----------
+        raw_candidates = []
 
-        # Fallbacks: более агрессивный поиск в тексте без whitelist
+        for name, var in variants.items():
+            if var is None:
+                continue
+            # приведение к grayscale если нужно
+            if len(var.shape) == 3:
+                var_gray = cv2.cvtColor(var, cv2.COLOR_BGR2GRAY)
+            else:
+                var_gray = var
+            raw_candidates.extend(ocr_candidates_from_image(var_gray, name))
+
+        # connected components на комбинированной маске
         try:
-            # попытка без ограничений на PSM
-            for name, im in preprocessed.items():
-                txt = pytesseract.image_to_string(im, config='--oem 3 --psm 6')
-                if txt:
-                    m = re.findall(r'\b([12]?\d|3[01])\b', txt)
-                    if m:
-                        v = int(m[0])
-                        if 1 <= v <= 31:
-                            logger.info(f"Fallback text found day: {v} from {name}")
-                            return v
+            blobs = combined.copy()
+            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(blobs, connectivity=8)
+            comps = []
+            for i in range(1, num_labels):
+                x_b, y_b, w_b, h_b, area_b = stats[i]
+                # допускаем маленькие области (1 может быть тонким)
+                if area_b < 8 or w_b < 3 or h_b < 6:
+                    continue
+                comps.append((x_b, y_b, w_b, h_b, area_b))
+            # сортируем слева-направо
+            comps.sort(key=lambda r: r[0])
+            if len(comps) >= 2:
+                # получаем OCR/templatematch для каждой компоненты
+                for c in comps:
+                    xb, yb, wb, hb, _ = c
+                    crop = blobs[yb:yb+hb, xb:xb+wb]
+                    # OCR first
+                    oc = ocr_candidates_from_image(crop, f"cc_{xb}")
+                    if oc:
+                        raw_candidates.extend(oc)
+                    else:
+                        # template match fallback
+                        d, score = template_match_digit(crop)
+                        if d is not None:
+                            # хит: переводим score (0..1) в "conf" шкалу (0..100)
+                            raw_candidates.append((d, int(score * 100), f"tmpl_cc_{xb}"))
+            elif len(comps) == 1:
+                # если один компонент — возможно две цифры внутри. попробуем вертикальную проекцию для сплита
+                xb, yb, wb, hb, _ = comps[0]
+                crop_full = blobs[yb:yb+hb, xb:xb+wb]
+                # вертикальная проекция
+                proj = np.sum(crop_full == 255, axis=0)
+                if crop_full.shape[1] >= 30:
+                    # smooth projection
+                    proj_s = cv2.GaussianBlur(proj.reshape(1, -1).astype(np.float32), (1, 5), 0).flatten()
+                    # ищем минимум между двух пиков: простой эвристикой
+                    peaks = np.where(proj_s > (proj_s.max() * 0.3))[0]
+                    if len(peaks) > 0:
+                        # попробуем разделить на половины по средней точке между leftmost and rightmost peaks
+                        left = np.min(peaks); right = np.max(peaks)
+                        if right - left > 10:
+                            split = int((left + right) // 2)
+                            left_crop = crop_full[:, :split]
+                            right_crop = crop_full[:, split:]
+                            for idx, sub in enumerate([left_crop, right_crop]):
+                                oc = ocr_candidates_from_image(sub, f"split_{idx}")
+                                if oc:
+                                    raw_candidates.extend(oc)
+                                else:
+                                    d, score = template_match_digit(sub)
+                                    if d is not None:
+                                        raw_candidates.append((d, int(score * 100), f"tmpl_split_{idx}"))
+                        else:
+                            # если не получилось надёжно разделить — пробуем OCR на весь crop
+                            oc = ocr_candidates_from_image(crop_full, "cc_full")
+                            if oc:
+                                raw_candidates.extend(oc)
+                            else:
+                                d, score = template_match_digit(crop_full)
+                                if d is not None:
+                                    raw_candidates.append((d, int(score * 100), "tmpl_cc_full"))
+                    else:
+                        # fallback: OCR на весь bbox
+                        oc = ocr_candidates_from_image(crop_full, "cc_full_fb")
+                        if oc:
+                            raw_candidates.extend(oc)
+                        else:
+                            d, score = template_match_digit(crop_full)
+                            if d is not None:
+                                raw_candidates.append((d, int(score * 100), "tmpl_cc_full2"))
+                else:
+                    oc = ocr_candidates_from_image(crop_full, "cc_small")
+                    if oc:
+                        raw_candidates.extend(oc)
+                    else:
+                        d, score = template_match_digit(crop_full)
+                        if d is not None:
+                            raw_candidates.append((d, int(score * 100), "tmpl_cc_small"))
+        except Exception as e:
+            logger.debug(f"Connected components pass failed: {e}")
+
+        # ---------- 6. Агрегация кандидатов ----------
+        if raw_candidates:
+            score_map = {}
+            for num, conf, src in raw_candidates:
+                # conf уже в 0..100 (OCR) или template mapped to 0..100
+                score_map.setdefault(num, 0)
+                score_map[num] += max(0, int(conf))
+            # приоритет двузначных (10..31)
+            sorted_nums = sorted(score_map.items(), key=lambda kv: (- (10 <= kv[0] <= 31), -kv[1], -kv[0]))
+            chosen = sorted_nums[0][0]
+            logger.info(f"Day candidates (agg): {score_map}, selected: {chosen}")
+            return chosen
+
+        # ---------- 7. Последняя попытка: OCR без whitelist на L-CLAHE и v_inv ----------
+        try:
+            txt = pytesseract.image_to_string(l_clahe, config='--oem 3 --psm 6')
+            if txt:
+                m = re.findall(r'\b([12]?\d|3[01])\b', txt)
+                if m:
+                    v = int(m[0])
+                    if 1 <= v <= 31:
+                        logger.info(f"Fallback found day from l_clahe: {v}")
+                        return v
+            txt2 = pytesseract.image_to_string(v_inv, config='--oem 3 --psm 6')
+            if txt2:
+                m = re.findall(r'\b([12]?\d|3[01])\b', txt2)
+                if m:
+                    v = int(m[0])
+                    if 1 <= v <= 31:
+                        logger.info(f"Fallback found day from v_inv: {v}")
+                        return v
         except Exception:
             pass
 

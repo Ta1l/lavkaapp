@@ -133,269 +133,228 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int, int, int, int]]:
 
 def _extract_day_simple(img: np.ndarray, box: Tuple[int, int, int, int]) -> Optional[int]:
     """
-    Улучшенное извлечение дня с группировкой отдельных цифр в многозначные числа.
+    Кардинально новый подход:
+      - вырезаем ROI (ЖЁЛТЫЙ квадратик) без цветовых преобразований
+      - масштабируем ROI и запускаем pytesseract.image_to_data на нескольких масштабах
+      - делаем template-matching по Canny-границам исходного ROI (несколько размеров шаблонов)
+      - собираем одиночные и парные (двузначные) кандидаты, агрегируем по score и выбираем лучший
     Возвращает int 1..31 или None.
     """
     try:
         x, y, w, h = box
-        padding = max(6, int(min(w, h) * 0.18))
-        x1 = max(0, x - padding)
-        y1 = max(0, y - padding)
-        x2 = min(img.shape[1], x + w + padding)
-        y2 = min(img.shape[0], y + h + padding)
-
+        # crop EXACT (минимальный padding = 0) — ты просил не менять изображение
+        x1, y1, x2, y2 = x, y, x + w, y + h
         roi_bgr = img[y1:y2, x1:x2].copy()
         if roi_bgr.size == 0:
             logger.warning("Empty ROI for yellow box")
             return None
 
-        # ---------- PREPROCESS ----------
-        lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB)
-        l = lab[:, :, 0]
-        l = cv2.bilateralFilter(l, d=7, sigmaColor=75, sigmaSpace=75)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
-        l_clahe = clahe.apply(l)
+        # convert to gray (but DO NOT apply heavy binarization)
+        roi_gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
 
-        hsv = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2HSV)
-        _, _, v = cv2.split(hsv)
-        v_blur = cv2.GaussianBlur(v, (3, 3), 0)
-        _, v_inv = cv2.threshold(v_blur, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        # --- 1) OCR на нескольких масштабах (используем image_to_data чтобы получить позиции/conf) ---
+        ocr_tokens = []  # each -> {"num": int, "conf": int(0..100), "x": int}
+        scales = [1.8, 2.5, 3.5]  # увеличиваем, т.к. OCR любит большие цифры
 
-        sobelx = cv2.Sobel(l_clahe, cv2.CV_64F, 1, 0, ksize=3)
-        sobelx = np.uint8(255.0 * (np.abs(sobelx) / (np.abs(sobelx).max() + 1e-9)))
-        _, sob_mask = cv2.threshold(sobelx, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-        lower_y = np.array([10, 80, 80])
-        upper_y = np.array([40, 255, 255])
-        yellow_mask = cv2.inRange(hsv, lower_y, upper_y)
-        non_yellow = cv2.bitwise_not(yellow_mask)
-
-        combined = cv2.bitwise_or(v_inv, sob_mask)
-        combined = cv2.bitwise_and(combined, non_yellow)
-        kernel_sq = cv2.getStructuringElement(cv2.MORPH_RECT, (2, 2))
-        kernel_v = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 3))
-        combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel_sq, iterations=1)
-        combined = cv2.dilate(combined, kernel_v, iterations=1)
-
-        try:
-            th_adapt = cv2.adaptiveThreshold(l_clahe, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                            cv2.THRESH_BINARY_INV, 11, 2)
-        except Exception:
-            _, th_adapt = cv2.threshold(l_clahe, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-
-        variants = {
-            "combined": combined,
-            "v_inv": v_inv,
-            "l_clahe": l_clahe,
-            "th_adapt": th_adapt
-        }
-
-        # ---------- TEMPLATES ----------
-        def make_templates(size=64):
-            tpls = {}
-            for d in range(10):
-                tpl = np.ones((size, size), dtype=np.uint8) * 255
-                txt = str(d)
-                # center text with simple font
-                font_scale = size / 50.0
-                thickness = max(1, int(font_scale))
-                ((tw, th), _) = cv2.getTextSize(txt, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
-                org = ((size - tw) // 2, (size + th) // 2)
-                cv2.putText(tpl, txt, org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,), thickness, cv2.LINE_AA)
-                _, tpl_bin = cv2.threshold(tpl, 200, 255, cv2.THRESH_BINARY)
-                tpls[d] = tpl_bin
-            return tpls
-
-        templates = make_templates(64)
-
-        # ---------- OCR that returns positions ----------
-        def ocr_with_positions(gray_img, source_name):
-            out = []
-            h0, w0 = gray_img.shape
-            scale = max(1.0, min(4.0, 300.0 / max(h0, w0)))
-            img_r = cv2.resize(gray_img, (int(w0 * scale), int(h0 * scale)), interpolation=cv2.INTER_CUBIC)
+        for s in scales:
+            h0, w0 = roi_gray.shape
+            img_r = cv2.resize(roi_gray, (int(w0 * s), int(h0 * s)), interpolation=cv2.INTER_CUBIC)
             cfgs = [
                 '--oem 3 --psm 7 -c tessedit_char_whitelist=0123456789/',
                 '--oem 3 --psm 8 -c tessedit_char_whitelist=0123456789/',
-                '--oem 3 --psm 10 -c tessedit_char_whitelist=0123456789'
+                '--oem 3 --psm 6 -c tessedit_char_whitelist=0123456789/'  # line
             ]
             for cfg in cfgs:
                 try:
                     data = pytesseract.image_to_data(img_r, config=cfg, output_type=pytesseract.Output.DICT)
-                    n = len(data.get("text", []))
-                    for i in range(n):
-                        txt = (data["text"][i] or "").strip()
-                        if not txt:
-                            continue
-                        conf_raw = data.get("conf", [])[i] if i < len(data.get("conf", [])) else '-1'
-                        try:
-                            conf = int(conf_raw) if str(conf_raw).lstrip('-').isdigit() else -1
-                        except:
-                            conf = -1
-                        left = data.get("left", [None])[i]
-                        # scale back x coordinate to ROI coordinate system
-                        x_coord = int(left / scale) if left is not None else None
-                        txt_norm = txt.replace(' ', '').replace('O','0').replace('o','0').replace('l','1').replace('I','1')
-                        if '/' in txt_norm:
-                            left_part = txt_norm.split('/')[0]
-                            for m in re.findall(r'\d{1,2}', left_part):
-                                val = int(m)
-                                if 1 <= val <= 31:
-                                    out.append({"num": val, "conf": max(conf, 0), "src": source_name, "x": x_coord})
-                        else:
-                            for m in re.findall(r'\d{1,2}', txt_norm):
-                                val = int(m)
-                                if 1 <= val <= 31:
-                                    out.append({"num": val, "conf": max(conf, 0), "src": source_name, "x": x_coord})
                 except Exception as e:
-                    logger.debug(f"OCR fail {source_name} cfg={cfg}: {e}")
-            return out
-
-        # ---------- template match helper (returns digit, score 0..100) ----------
-        def template_match_digit(crop_bin):
-            _, crop_thr = cv2.threshold(crop_bin, 128, 255, cv2.THRESH_BINARY)
-            ch, cw = crop_thr.shape
-            best_digit = None
-            best_score = 0.0
-            for d, tpl in templates.items():
-                try:
-                    crop_r = cv2.resize(crop_thr, (tpl.shape[1], tpl.shape[0]), interpolation=cv2.INTER_AREA)
-                    res = cv2.matchTemplate(255 - crop_r, 255 - tpl, cv2.TM_CCOEFF_NORMED)
-                    if res is None:
+                    logger.debug(f"pytesseract failed for scale={s} cfg={cfg}: {e}")
+                    continue
+                n = len(data.get("text", []))
+                for i in range(n):
+                    txt = (data["text"][i] or "").strip()
+                    if not txt:
                         continue
-                    score = float(res.max())
-                    if score > best_score:
-                        best_score = score
-                        best_digit = d
+                    # normalize common conf forms
+                    conf_raw = data.get("conf", [])[i] if i < len(data.get("conf", [])) else '-1'
+                    try:
+                        conf = int(conf_raw) if str(conf_raw).lstrip('-').isdigit() else -1
+                    except:
+                        conf = -1
+                    # left coordinate in scaled image -> map back to ROI coords
+                    left = data.get("left", [None])[i]
+                    if left is not None:
+                        x_coord = int(left / s)
+                    else:
+                        x_coord = None
+                    # normalize text and extract digits (handle '/')
+                    tnorm = txt.replace(' ', '').replace('O', '0').replace('o', '0').replace('l', '1').replace('I', '1')
+                    if '/' in tnorm:
+                        left_part = tnorm.split('/')[0]
+                        m = re.findall(r'\d{1,2}', left_part)
+                    else:
+                        m = re.findall(r'\d{1,2}', tnorm)
+                    for mg in m:
+                        v = int(mg)
+                        if 1 <= v <= 31:
+                            ocr_tokens.append({"num": v, "conf": max(0, conf), "x": x_coord})
+
+        # --- 2) Template-matching on edges (Canny) of original ROI (no color change) ---
+        # Prepare edge map of ROI (works well with anti-aliased UI fonts)
+        edges = cv2.Canny(roi_gray, 50, 150)
+        # Make digit templates as edge templates (draw digits then edge)
+        def _make_edge_templates(sizes=(28, 36, 48)):
+            tpls = {}
+            for size in sizes:
+                tpl_dict = {}
+                # create square canvas
+                for d in range(10):
+                    canvas = np.ones((size, size), dtype=np.uint8) * 255
+                    # choose font scale relative to size
+                    font_scale = size / 40.0
+                    thickness = max(1, int(font_scale))
+                    ((tw, th), _) = cv2.getTextSize(str(d), cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+                    org = ((size - tw) // 2, (size + th) // 2)
+                    cv2.putText(canvas, str(d), org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,), thickness, cv2.LINE_AA)
+                    # edge of template
+                    tpl_edge = cv2.Canny(canvas, 50, 150)
+                    tpl_dict[d] = tpl_edge
+                tpls[size] = tpl_dict
+            return tpls
+
+        templates = _make_edge_templates((28, 36, 48))
+
+        # Non-max suppression helper for matches
+        def _nms_matches(score_map, tpl_w, tpl_h, thresh=0.55):
+            matches = []
+            sm = score_map.copy()
+            # iterate finding peaks
+            while True:
+                minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(sm)
+                if maxVal < thresh:
+                    break
+                matches.append((maxLoc[0], maxLoc[1], float(maxVal)))
+                # zero out neighborhood
+                x0, y0 = maxLoc
+                x1 = max(0, x0 - tpl_w // 2)
+                y1 = max(0, y0 - tpl_h // 2)
+                x2 = min(sm.shape[1], x0 + tpl_w // 2)
+                y2 = min(sm.shape[0], y0 + tpl_h // 2)
+                sm[y1:y2, x1:x2] = 0
+            return matches
+
+        template_matches = []  # items: {"digit":d, "x":x, "score":score}
+        # match multi-size templates
+        for size, tpl_dict in templates.items():
+            for d, tpl_edge in tpl_dict.items():
+                try:
+                    # we need ROI edges larger than template; if smaller, skip
+                    if edges.shape[0] < tpl_edge.shape[0] or edges.shape[1] < tpl_edge.shape[1]:
+                        continue
+                    res = cv2.matchTemplate(edges, tpl_edge, cv2.TM_CCOEFF_NORMED)
+                    # find peaks via simple NMS
+                    matches = _nms_matches(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=0.58)
+                    for (mx, my, score) in matches:
+                        # mx is left in ROI coords for that match
+                        template_matches.append({"digit": d, "x": int(mx), "score": float(score)})
                 except Exception:
                     continue
-            return best_digit, int(best_score * 100)
 
-        raw_tokens = []  # each: {"num":int, "conf":int, "src":str, "x":int|None}
+        # If no template matches with high threshold, lower threshold and allow more
+        if not template_matches:
+            for size, tpl_dict in templates.items():
+                for d, tpl_edge in tpl_dict.items():
+                    try:
+                        if edges.shape[0] < tpl_edge.shape[0] or edges.shape[1] < tpl_edge.shape[1]:
+                            continue
+                        res = cv2.matchTemplate(edges, tpl_edge, cv2.TM_CCOEFF_NORMED)
+                        matches = _nms_matches(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=0.45)
+                        for (mx, my, score) in matches:
+                            template_matches.append({"digit": d, "x": int(mx), "score": float(score)})
+                    except Exception:
+                        continue
 
-        # OCR on variants
-        for name, var in variants.items():
-            if var is None:
-                continue
-            var_gray = var if len(var.shape) == 2 else cv2.cvtColor(var, cv2.COLOR_BGR2GRAY)
-            raw_tokens.extend(ocr_with_positions(var_gray, name))
+        # convert template match score to 0..100 scale like OCR conf
+        for tm in template_matches:
+            tm["conf"] = int(tm["score"] * 100)
+            tm["num"] = int(tm["digit"])
+            # keep same shape as OCR tokens
+            # some templates might overlap the same digit multiple times
 
-            # also on scaled versions (some cases help)
-            for s in (1.7, 2.5):
-                h0, w0 = var_gray.shape
-                img_r = cv2.resize(var_gray, (int(w0 * s), int(h0 * s)), interpolation=cv2.INTER_CUBIC)
-                raw_tokens.extend(ocr_with_positions(img_r, f"{name}_x{s}"))
+        # Merge OCR tokens and template tokens into a single token list
+        merged_tokens = []
+        for t in ocr_tokens:
+            merged_tokens.append({"num": int(t["num"]), "conf": int(t["conf"]), "x": t.get("x")})
+        for tm in template_matches:
+            # template matches may be many; we add them too
+            merged_tokens.append({"num": int(tm["num"]), "conf": int(tm["conf"]), "x": int(tm["x"])})
 
-        # connected components on combined mask
-        try:
-            blobs = combined.copy()
-            num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(blobs, connectivity=8)
-            comps = []
-            for i in range(1, num_labels):
-                xb, yb, wb, hb, area = stats[i]
-                if area < 6 or wb < 3 or hb < 6:
-                    continue
-                comps.append((i, xb, yb, wb, hb, area))
-            comps.sort(key=lambda r: r[1])  # left->right
-            # for each component, try OCR and template fallback
-            for comp in comps:
-                _, xb, yb, wb, hb, _ = comp
-                crop = blobs[yb:yb+hb, xb:xb+wb]
-                # OCR on that crop
-                oc = ocr_with_positions(crop, f"cc_{xb}")
-                if oc:
-                    # attach real x coordinate relative to ROI (xb)
-                    for t in oc:
-                        # if t['x'] is not None, adjust: t['x'] is left in scaled crop; but we don't know scale => override with xb
-                        t['x'] = xb
-                        raw_tokens.append(t)
-                else:
-                    # template fallback
-                    d, score = template_match_digit(crop)
-                    if d is not None:
-                        raw_tokens.append({"num": d, "conf": int(score), "src": f"tmpl_cc_{xb}", "x": xb})
-        except Exception as e:
-            logger.debug(f"Connected components step failed: {e}")
+        # If nothing found at all -> return None
+        if not merged_tokens:
+            logger.warning("No tokens found by OCR or template matching in ROI (original-crop strategy).")
+            return None
 
-        # ---------- GROUPING tokens into multi-digit numbers ----------
-        # keep tokens with x info separate from those without
-        tokens_with_x = [t for t in raw_tokens if t.get("x") is not None]
-        tokens_without_x = [t for t in raw_tokens if t.get("x") is None]
+        # --- Build multi-digit candidates from tokens using X coordinate (left->right) ---
+        # Separate tokens with known x and without
+        tokens_with_x = [t for t in merged_tokens if t.get("x") is not None]
+        tokens_without_x = [t for t in merged_tokens if t.get("x") is None]
 
-        composed_scores = {}  # num -> total_score
+        # Base scoring map (single digit contributions)
+        score_map = {}
+        for t in merged_tokens:
+            score_map.setdefault(t["num"], 0)
+            score_map[t["num"]] += max(0, int(t["conf"]))
 
-        # single-digit contributions
-        for t in raw_tokens:
-            n = t["num"]; c = int(t["conf"])
-            composed_scores.setdefault(n, 0)
-            composed_scores[n] += max(0, c)
-
-        # try to build two-digit numbers from nearby tokens (left->right)
+        # Combine left->right neighbors into two-digit numbers
         if tokens_with_x:
-            # sort by x ascending
             tokens_with_x.sort(key=lambda t: t["x"])
-            # window to combine neighbors into 2-digit numbers
+            roi_w = roi_gray.shape[1]
             for i in range(len(tokens_with_x)):
                 left = tokens_with_x[i]
-                # try pair with immediate right neighbor(s)
                 for j in (i+1, i+2):
                     if j >= len(tokens_with_x):
                         break
                     right = tokens_with_x[j]
-                    # distance heuristic: if too far, break
                     dist = right["x"] - left["x"]
-                    # width heuristic: use ROI width approx
-                    roi_w = roi_bgr.shape[1]
-                    # if distance too large relative to roi width, skip combining
-                    if dist > max(roi_w * 0.6, 60):
-                        break
-                    # assemble number
-                    num = left["num"] * 10 + right["num"]
-                    if 1 <= num <= 31:
-                        score_sum = int(left["conf"]) + int(right["conf"])
-                        # boost score a bit if src different types (OCR+template)
-                        if left["src"].startswith("tmpl") or right["src"].startswith("tmpl"):
-                            score_sum += 10
-                        composed_scores.setdefault(num, 0)
-                        composed_scores[num] += max(0, score_sum)
+                    # require that two digits are reasonably close (not across entire ROI)
+                    if dist < max(roi_w * 0.7, 80):
+                        num = left["num"] * 10 + right["num"]
+                        if 1 <= num <= 31:
+                            # scoring: sum conf
+                            ssum = int(left["conf"]) + int(right["conf"])
+                            # if either was template-based (high conf) we keep it
+                            score_map.setdefault(num, 0)
+                            score_map[num] += max(0, ssum)
 
-        # Also attempt triple-digit (not necessary for day) — skip
+        # Also try to construct number by ordering template matches even if OCR provided single digit
+        # (covering case where OCR gives '1' and template finds '7' a bit to the right)
+        if template_matches:
+            tms = sorted(template_matches, key=lambda m: m["x"])
+            for i in range(len(tms)):
+                for j in range(i+1, min(i+3, len(tms))):
+                    left = tms[i]; right = tms[j]
+                    dist = right["x"] - left["x"]
+                    if dist < max(roi_w * 0.7, 80):
+                        num = left["num"] * 10 + right["num"]
+                        if 1 <= num <= 31:
+                            ssum = int(left["conf"]) + int(right["conf"])
+                            score_map.setdefault(num, 0)
+                            score_map[num] += max(0, ssum)
 
-        # ---------- FINAL SELECTION ----------
-        if composed_scores:
-            # prefer two-digit numbers by boosting them in sort key, then by score, then by numeric value
-            items = list(composed_scores.items())
+        # Final selection: prefer two-digit numbers in 10..31, then by highest total score
+        if score_map:
+            # sort: prefer two-digit 10..31, then by score desc, then numeric desc
+            items = list(score_map.items())
             items.sort(key=lambda kv: (- (10 <= kv[0] <= 31), -kv[1], -kv[0]))
             chosen_num = items[0][0]
-            logger.info(f"Day candidates (agg): {composed_scores}, selected: {chosen_num}")
+            logger.info(f"Day candidates (agg): {score_map}, selected: {chosen_num}")
             return chosen_num
 
-        # fallback: try free OCR on l_clahe/v_inv
-        try:
-            txt = pytesseract.image_to_string(l_clahe, config='--oem 3 --psm 6')
-            if txt:
-                m = re.findall(r'\b([12]?\d|3[01])\b', txt)
-                if m:
-                    v = int(m[0]); 
-                    if 1 <= v <= 31:
-                        logger.info(f"Fallback found day from l_clahe: {v}")
-                        return v
-            txt2 = pytesseract.image_to_string(v_inv, config='--oem 3 --psm 6')
-            if txt2:
-                m = re.findall(r'\b([12]?\d|3[01])\b', txt2)
-                if m:
-                    v = int(m[0])
-                    if 1 <= v <= 31:
-                        logger.info(f"Fallback found day from v_inv: {v}")
-                        return v
-        except Exception:
-            pass
-
-        logger.warning("No valid day found in yellow box after all attempts")
+        logger.warning("No valid day composed after aggregation on original crop.")
         return None
 
     except Exception as e:
-        logger.error(f"Error extracting day: {e}")
+        logger.error(f"Error in new extract_day_simple(original-crop): {e}")
         return None
 
 

@@ -2,25 +2,24 @@
 # -*- coding: utf-8 -*-
 """
 OCR-модуль для извлечения слотов из скриншотов.
-Версия: HYBRID (PaddleOCR + template-matching classifier + template matching fallback).
-
+HYBRID версия: PaddleOCR (если доступен) + pytesseract (fallback) + template-based classifier & matching.
 Сохраняет прежний API и структуру (NewFormatSlotParser, MemorySlotParser, SlotParser).
 """
 
 import os
 import re
 import logging
+import math
 from datetime import date, datetime
 from typing import List, Dict, Optional, Tuple, Any
 from io import BytesIO
-from collections import Counter, defaultdict
-import math
+from collections import defaultdict
 
 import cv2
 import numpy as np
 from PIL import Image
 
-# Try to import PaddleOCR (preferred). If not available, we'll fallback to pytesseract.
+# Try to import PaddleOCR (preferred)
 try:
     from paddleocr import PaddleOCR
     _PADDLE_AVAILABLE = True
@@ -28,7 +27,7 @@ except Exception:
     PaddleOCR = None
     _PADDLE_AVAILABLE = False
 
-# pytesseract fallback
+# Try to import pytesseract (fallback)
 try:
     import pytesseract
     _PYTESSERACT_AVAILABLE = True
@@ -49,23 +48,32 @@ TIME_RANGE_PATTERNS = [
     re.compile(r"(\d{2})(\d{2})\s*[-–—]\s*(\d{2})(\d{2})"),
 ]
 
-# --------- OCR Reader init ---------
+# --------- Initialize PaddleOCR safely (various versions) ---------
 def _init_paddle_reader():
     if not _PADDLE_AVAILABLE:
-        logger.warning("PaddleOCR not available. Install with `pip install paddleocr paddlepaddle` for best results.")
+        logger.info("PaddleOCR not installed; will use pytesseract/template fallbacks.")
         return None
+    # try a couple init signatures to support different paddleocr versions
     try:
-        # cpu-friendly initialization; disable angle classifier for speed (we mostly have digits)
-        reader = PaddleOCR(use_angle_cls=False, lang='en', show_log=False)
-        logger.info("PaddleOCR reader initialized.")
+        reader = PaddleOCR(use_angle_cls=False, lang="en")
+        logger.info("Initialized PaddleOCR (use_angle_cls=False, lang='en').")
         return reader
+    except TypeError:
+        # maybe older/newer signature
+        try:
+            reader = PaddleOCR(lang="en")
+            logger.info("Initialized PaddleOCR (lang='en').")
+            return reader
+        except Exception as e:
+            logger.warning(f"PaddleOCR init fallback failed: {e}")
+            return None
     except Exception as e:
-        logger.error(f"Failed to initialize PaddleOCR: {e}")
+        logger.warning(f"PaddleOCR init failed: {e}")
         return None
 
 _PADDLE_READER = _init_paddle_reader()
 
-# --------- Вспомогательные функции ---------
+# --------- Helper functions (image IO, find yellow box) ---------
 def _read_image(image_input: Any) -> Optional[np.ndarray]:
     """Read image from path/bytes/BytesIO/PIL.Image -> BGR numpy array"""
     try:
@@ -95,10 +103,11 @@ def _read_image(image_input: Any) -> Optional[np.ndarray]:
         return None
 
 def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
-    """Find the yellow square - same logic as original"""
+    """Find the yellow square region (top half) and return (x,y,w,h) or None"""
     try:
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        lower = np.array([10, 50, 50])
+        # Slightly broader yellow/orange range
+        lower = np.array([8, 60, 60])
         upper = np.array([40, 255, 255])
         mask = cv2.inRange(hsv, lower, upper)
         h = mask.shape[0]
@@ -112,11 +121,11 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
         valid = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 500:
+            if area < 400:  # slightly smaller threshold
                 continue
             x,y,w,h = cv2.boundingRect(cnt)
-            ar = w / float(h)
-            if 0.7 <= ar <= 1.5:
+            ar = w / float(h) if h>0 else 0
+            if 0.6 <= ar <= 1.6:
                 valid.append((x,y,w,h,area))
         if not valid:
             return None
@@ -129,13 +138,9 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
         return None
 
 # ---------------------------
-# Template-based digit templates and classifier (lightweight, no ML libs)
+# Template digit creation & classifier (no ML libs required)
 # ---------------------------
-def _make_digit_templates(sizes=(28,36,48)):
-    """
-    Create edge templates for digits 0-9 for different sizes.
-    Returns dict: {size: {digit: tpl_edge}}
-    """
+def _make_edge_templates(sizes=(28,36,48)):
     tpls = {}
     for size in sizes:
         tpl_dict = {}
@@ -151,41 +156,34 @@ def _make_digit_templates(sizes=(28,36,48)):
         tpls[size] = tpl_dict
     return tpls
 
-_DIGIT_TEMPLATES = _make_digit_templates((28,36,48))
+_DIGIT_TEMPLATES = _make_edge_templates((28,36,48))
 
 def _template_classify_digit(digit_img_gray: np.ndarray) -> Tuple[int, float]:
     """
-    Classify a small gray image that (likely) contains a single digit using templates.
-    Returns (digit, score 0..100).
+    Classify a grayscale image (single digit crop) by matching to edge templates.
+    Returns (digit, score 0..100). If uncertain returns (-1, 0.0).
     """
     try:
-        # preprocess: threshold + edges
-        # Resize digit to multiple template sizes and compute best normalized cross-correlation on edges
         edges = cv2.Canny(digit_img_gray, 50, 150)
+        h0, w0 = edges.shape[:2]
         best_digit = -1
         best_score = 0.0
-        h0, w0 = edges.shape[:2]
         for size, tpl_dict in _DIGIT_TEMPLATES.items():
-            # Resize edges to template scale (keep aspect by padding)
+            # normalize to square canvas
+            maxi = max(h0, w0, 1)
+            canvas = np.ones((maxi, maxi), dtype=np.uint8) * 0
+            y_off = (maxi - h0)//2
+            x_off = (maxi - w0)//2
+            canvas[y_off:y_off+h0, x_off:x_off+w0] = edges
             try:
-                # center-crop/pad to square then resize
-                maxi = max(h0, w0)
-                canvas = np.ones((maxi, maxi), dtype=np.uint8) * 0
-                # place edges centered on canvas
-                y_off = (maxi - h0)//2
-                x_off = (maxi - w0)//2
-                canvas[y_off:y_off+h0, x_off:x_off+w0] = edges
                 resized = cv2.resize(canvas, (size, size), interpolation=cv2.INTER_CUBIC)
             except Exception:
                 continue
             for d, tpl in tpl_dict.items():
-                # compare tpl and resized via normalized correlation of binary images
-                # convert to float and compute correlation
+                # compute similarity (1 - normalized L2)
                 tpl_f = tpl.astype(np.float32) / 255.0
                 r_f = resized.astype(np.float32) / 255.0
-                # compute similarity = 1 - normalized L2 distance (bounded)
                 dist = np.linalg.norm(tpl_f - r_f)
-                # normalize dist to [0, sqrt(size*size)]
                 norm_max = math.sqrt(size*size)
                 sim = max(0.0, 1.0 - (dist / (norm_max + 1e-6)))
                 score = sim * 100.0
@@ -196,19 +194,30 @@ def _template_classify_digit(digit_img_gray: np.ndarray) -> Tuple[int, float]:
             return (-1, 0.0)
         return (int(best_digit), float(best_score))
     except Exception as e:
-        logger.debug(f"Template classifier error: {e}")
+        logger.debug(f"template classifier error: {e}")
         return (-1, 0.0)
 
-# ---------------------------
-# Template matching on ROI edges to find digit positions
-# ---------------------------
-def _match_templates_on_roi_edges(roi_gray: np.ndarray, threshold_high=0.58, threshold_low=0.45):
-    """
-    Run templatematch for each digit template on ROI edges.
-    Returns list of matches: {"digit":int,"x":int,"y":int,"score":float}
-    """
-    edges = cv2.Canny(roi_gray, 50, 150)
+def _nms_peaks(res, tpl_w, tpl_h, thresh=0.55):
+    """Simple NMS for matchTemplate results, returns list of (x,y,score) peaks above thresh."""
     matches = []
+    sm = res.copy()
+    while True:
+        minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(sm)
+        if maxVal < thresh:
+            break
+        mx, my = maxLoc
+        matches.append((mx, my, float(maxVal)))
+        # zero neighborhood
+        x0, y0 = mx, my
+        x1 = max(0, x0 - tpl_w//2); y1 = max(0, y0 - tpl_h//2)
+        x2 = min(sm.shape[1], x0 + tpl_w//2); y2 = min(sm.shape[0], y0 + tpl_h//2)
+        sm[y1:y2, x1:x2] = 0
+    return matches
+
+def _match_templates_on_roi_edges(roi_gray: np.ndarray, thr_high=0.58, thr_low=0.45):
+    """Return list of matches dicts: {'digit', 'x', 'y', 'score', 'src'} sorted by x"""
+    edges = cv2.Canny(roi_gray, 50, 150)
+    matches_out = []
     for size, tpl_dict in _DIGIT_TEMPLATES.items():
         for d, tpl_edge in tpl_dict.items():
             th, tw = tpl_edge.shape
@@ -218,178 +227,163 @@ def _match_templates_on_roi_edges(roi_gray: np.ndarray, threshold_high=0.58, thr
                 res = cv2.matchTemplate(edges, tpl_edge, cv2.TM_CCOEFF_NORMED)
             except Exception:
                 continue
-            # simple peak finding (NMS)
-            res_cp = res.copy()
-            while True:
-                minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(res_cp)
-                if maxVal < threshold_high:
-                    break
-                mx, my = maxLoc
-                matches.append({"digit": d, "x": int(mx), "y": int(my), "score": float(maxVal)*100.0, "src":"tmpl"})
-                # zero out neighborhood
-                x0, y0 = mx, my
-                x1 = max(0, x0 - tw//2); y1 = max(0, y0 - th//2)
-                x2 = min(res_cp.shape[1], x0 + tw//2); y2 = min(res_cp.shape[0], y0 + th//2)
-                res_cp[y1:y2, x1:x2] = 0
-            # if no high matches, try lower threshold to collect more
-            if not matches:
-                res_cp = res.copy()
-                while True:
-                    minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(res_cp)
-                    if maxVal < threshold_low:
-                        break
-                    mx, my = maxLoc
-                    matches.append({"digit": d, "x": int(mx), "y": int(my), "score": float(maxVal)*100.0, "src":"tmpl"})
-                    x0, y0 = mx, my
-                    x1 = max(0, x0 - tw//2); y1 = max(0, y0 - th//2)
-                    x2 = min(res_cp.shape[1], x0 + tw//2); y2 = min(res_cp.shape[0], y0 + th//2)
-                    res_cp[y1:y2, x1:x2] = 0
-    # return matches sorted by x
-    matches.sort(key=lambda m: m["x"])
-    return matches
+            peaks = _nms_peaks(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=thr_high)
+            if not peaks:
+                peaks = _nms_peaks(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=thr_low)
+            for mx, my, score in peaks:
+                matches_out.append({"digit": int(d), "x": int(mx), "y": int(my), "score": float(score*100.0), "src":"tmpl"})
+    matches_out.sort(key=lambda m: m["x"])
+    return matches_out
 
 # ---------------------------
-# PaddleOCR wrapper and fallback to pytesseract
+# OCR wrapper: PaddleOCR preferred, pytesseract fallback
 # ---------------------------
-def _ocr_read_text_on_image(img_gray: np.ndarray) -> List[Tuple[str, float, Tuple[int,int,int,int]]]:
+def _ocr_read_text_on_image(img: np.ndarray) -> List[Tuple[str, float, Tuple[int,int,int,int]]]:
     """
-    Returns list of (text, conf(0..100), bbox_in_img_coords) using PaddleOCR or pytesseract fallback.
-    bbox format: (x_min, y_min, x_max, y_max)
+    Return list of (text, conf(0..100), bbox=(x_min,y_min,x_max,y_max)).
+    Accepts BGR or grayscale image (numpy).
     """
-    results = []
-    # Prefer paddle
-    if _PADDLE_READER is not None:
-        try:
-            # PaddleOCR expects RGB image
-            pil_rgb = cv2.cvtColor(img_gray, cv2.COLOR_GRAY2RGB) if len(img_gray.shape)==2 else cv2.cvtColor(img_gray, cv2.COLOR_BGR2RGB)
-            # paddleocr returns list of lists; each entry: [[(x1,y1),(x2,y2),(x3,y3),(x4,y4)], (text, score)]
-            raw = _PADDLE_READER.ocr(pil_rgb, cls=False)
-            for line in raw:
-                if not line:
-                    continue
-                bbox = line[0]
-                text = line[1][0] if len(line[1])>0 else ""
-                conf = float(line[1][1]) if len(line[1])>1 and isinstance(line[1][1], (float,int)) else 0.0
-                xs = [int(p[0]) for p in bbox]; ys = [int(p[1]) for p in bbox]
-                x_min, y_min, x_max, y_max = min(xs), min(ys), max(xs), max(ys)
-                results.append((text, conf*100.0, (x_min, y_min, x_max, y_max)))
-            return results
-        except Exception as e:
-            logger.debug(f"PaddleOCR failed: {e}")
-            # fallback to pytesseract below
-
-    # fallback: pytesseract (if available)
-    if _PYTESSERACT_AVAILABLE:
-        try:
-            # pytesseract returns string; to get bbox we can use image_to_data
-            data = pytesseract.image_to_data(img_gray, output_type=pytesseract.Output.DICT, config='-c tessedit_char_whitelist=0123456789/: ')
-            n = len(data.get("text", []))
-            for i in range(n):
-                txt = (data["text"][i] or "").strip()
-                if not txt:
-                    continue
-                conf_raw = data.get("conf", [])[i]
-                try:
-                    conf = float(conf_raw)
-                except Exception:
-                    conf = -1.0
-                x = int(data.get("left", [0])[i])
-                y = int(data.get("top", [0])[i])
-                w = int(data.get("width", [0])[i])
-                h = int(data.get("height", [0])[i])
-                results.append((txt, conf, (x,y,x+w,y+h)))
-            return results
-        except Exception as e:
-            logger.debug(f"pytesseract failed: {e}")
-            return []
-    # if none available, return empty
-    logger.warning("No OCR engine available (PaddleOCR and pytesseract missing).")
-    return []
+    out = []
+    try:
+        # prepare RGB for paddle if necessary
+        if _PADDLE_READER is not None:
+            try:
+                # paddleocr expects RGB image (H x W x 3) numpy
+                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if len(img.shape)==3 else cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+                raw = _PADDLE_READER.ocr(img_rgb, cls=False)
+                # raw format: list of [ [box_points], (text, score) ] OR nested; handle both
+                for line in raw:
+                    try:
+                        box = line[0]
+                        text = line[1][0] if isinstance(line[1], (list,tuple)) and len(line[1])>0 else (line[1] if isinstance(line[1], str) else "")
+                        conf = float(line[1][1]) if isinstance(line[1], (list,tuple)) and len(line[1])>1 else 0.0
+                        xs = [int(p[0]) for p in box]; ys = [int(p[1]) for p in box]
+                        out.append((text, conf*100.0, (min(xs), min(ys), max(xs), max(ys))))
+                    except Exception:
+                        # Some versions return simpler tuples
+                        try:
+                            text = str(line[1])
+                            conf = 0.0
+                            out.append((text, conf, (0,0,img.shape[1], img.shape[0])))
+                        except Exception:
+                            continue
+                return out
+            except Exception as e:
+                logger.debug(f"PaddleOCR read error, falling back: {e}")
+        # pytesseract fallback
+        if _PYTESSERACT_AVAILABLE:
+            try:
+                # get data with box info
+                data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, config='-c tessedit_char_whitelist=0123456789/: ')
+                n = len(data.get("text", []))
+                for i in range(n):
+                    txt = (data["text"][i] or "").strip()
+                    if not txt:
+                        continue
+                    conf_raw = data.get("conf", [])[i]
+                    try:
+                        conf = float(conf_raw)
+                    except Exception:
+                        conf = -1.0
+                    x = int(data.get("left", [0])[i])
+                    y = int(data.get("top", [0])[i])
+                    w = int(data.get("width", [0])[i])
+                    h = int(data.get("height", [0])[i])
+                    out.append((txt, conf, (x,y,x+w,y+h)))
+                return out
+            except Exception as e:
+                logger.debug(f"pytesseract read error: {e}")
+        # If no OCR engines, return empty
+        logger.debug("No OCR engine available (PaddleOCR/pytesseract).")
+        return out
+    except Exception as e:
+        logger.error(f"_ocr_read_text_on_image error: {e}")
+        return out
 
 # ---------------------------
-# Main: extract day hybrid
+# Hybrid day extraction
 # ---------------------------
 def _extract_day_hybrid(img: np.ndarray, box: Tuple[int,int,int,int]) -> Optional[int]:
     """
-    Hybrid approach:
-      - Crop exact ROI (small pad)
-      - Run PaddleOCR (multiple scales) to get textual candidates
-      - Run template matching across ROI to get digit positions/matches
-      - Run template classifier for small digit crops (per candidate)
-      - Aggregate candidates with weights: OCR weight=1.0, classifier weight=0.8, template weight=0.5
-      - Apply validation rules for two-digit numbers (require OCR or classifier support)
+    Hybrid extraction: crop ROI, preprocess, get OCR tokens (multi-scale),
+    get template matches, classify digit crops, aggregate with weights and rules.
+    Returns integer day 1..31 or None.
     """
     try:
         x,y,w,h = box
-        pad = max(0, int(min(w,h) * 0.05))
+        # crop with small padding
+        pad = max(0, int(min(w,h)*0.05))
         x1, y1 = max(0, x-pad), max(0, y-pad)
-        x2, y2 = min(img.shape[1], x + w + pad), min(img.shape[0], y + h + pad)
+        x2, y2 = min(img.shape[1], x+w+pad), min(img.shape[0], y+h+pad)
         roi_bgr = img[y1:y2, x1:x2].copy()
         if roi_bgr.size == 0:
-            logger.warning("Empty ROI for _extract_day_hybrid")
             return None
-        roi_gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
 
-        # ---------- 1) OCR candidates (multiple scales) ----------
-        ocr_tokens = []  # {"num":int, "conf":float, "x":int, "src":"ocr"}
-        scales = [1.5, 2.5, 3.5]
+        # Preprocess ROI: LAB + CLAHE on L, then slight blur
+        lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+        l2 = clahe.apply(l)
+        lab2 = cv2.merge((l2,a,b))
+        roi_bgr2 = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+        roi_gray = cv2.cvtColor(roi_bgr2, cv2.COLOR_BGR2GRAY)
+        roi_gray = cv2.medianBlur(roi_gray, 3)
+
+        # Multi-scale OCR candidates
+        ocr_candidates = []  # dicts: {"num", "conf", "x", "src"}
+        scales = [1.5, 2.5]  # avoid too big to speed up
         for s in scales:
             try:
                 H0, W0 = roi_gray.shape
-                img_r = cv2.resize(roi_gray, (int(W0*s), int(H0*s)), interpolation=cv2.INTER_CUBIC)
+                img_s = cv2.resize(roi_gray, (int(W0*s), int(H0*s)), interpolation=cv2.INTER_CUBIC)
             except Exception:
-                img_r = roi_gray.copy()
-            ocr_results = _ocr_read_text_on_image(img_r)
-            for text, conf, bbox in ocr_results:
+                img_s = roi_gray.copy()
+            ocr_out = _ocr_read_text_on_image(img_s)
+            for text, conf, bbox in ocr_out:
                 if not text:
                     continue
-                tnorm = text.replace(' ', '').replace('O','0').replace('o','0').replace('l','1').replace('I','1')
-                # if there's slash e.g., "4/12", take part before slash
-                left = tnorm.split('/')[0] if '/' in tnorm else tnorm
-                matches = re.findall(r'\d{1,2}', left)
-                # bbox is in scaled coords -> map left x back
+                tnorm = str(text).replace(' ', '').replace('O','0').replace('o','0').replace('l','1').replace('I','1')
+                left_part = tnorm.split('/')[0] if '/' in tnorm else tnorm
+                nums = re.findall(r'\d{1,2}', left_part)
+                # map bbox left coordinate back to ROI space if available
+                x_coord = None
                 if bbox:
-                    bxmin = bbox[0]
-                    x_coord = int(bxmin / s)
-                else:
-                    x_coord = None
-                for m in matches:
-                    v = int(m)
-                    if 1 <= v <= 31:
-                        ocr_tokens.append({"num":v, "conf": float(conf), "x": x_coord, "src":"ocr"})
+                    bx = bbox[0]
+                    try:
+                        x_coord = int(bx / s)
+                    except Exception:
+                        x_coord = None
+                for nstr in nums:
+                    numv = int(nstr)
+                    if 1 <= numv <= 31:
+                        ocr_candidates.append({"num": numv, "conf": float(conf), "x": x_coord, "src":"ocr"})
 
-        # ---------- 2) Template matching across ROI edges ----------
-        template_matches = _match_templates_on_roi_edges(roi_gray)
-        # convert to unified format tokens (template matches)
-        tmpl_tokens = []
-        for tm in template_matches:
-            # tm already has 'digit', 'x', 'score'
-            tmpl_tokens.append({"num": int(tm["digit"]), "conf": float(tm["score"]), "x": int(tm["x"]), "src":"tmpl"})
+        # Template matches
+        tmpl_matches = _match_templates_on_roi_edges(roi_gray)
+        tmpl_tokens = [{"num": m["digit"], "conf": m["score"], "x": m["x"], "src":"tmpl"} for m in tmpl_matches]
 
-        # ---------- 3) Classifier predictions for candidate digit crops ----------
-        # We'll attempt to crop around template matches and classify using template-classifier
+        # Classifier tokens (try to crop around template matches, else find contours)
         classifier_tokens = []
-        # Use template matches as seeds for crops; if none, try to segment ROI into connected components
-        seeds = template_matches if template_matches else []
-
-        if seeds:
-            for s in seeds:
+        if tmpl_matches:
+            # use positions to create crops and classify
+            for m in tmpl_matches:
                 try:
-                    # crop region around x position: width ~ w*0.35 or template size
-                    cx = s["x"]
+                    cx = m["x"]
                     H, W = roi_gray.shape
-                    crop_w = max(20, int(min(W, max(20, W*0.3))))
-                    x0 = max(0, cx - crop_w//2)
-                    x1c = min(W, cx + crop_w//2)
-                    digit_crop = roi_gray[:, x0:x1c]
-                    dnum, dscore = _template_classify_digit(digit_crop)
+                    # try cropping a box around expected digit region
+                    wbox = max(12, int(W*0.25))
+                    x0 = max(0, cx - wbox//2)
+                    x1c = min(W, cx + wbox//2)
+                    crop = roi_gray[:, x0:x1c]
+                    if crop.size == 0:
+                        continue
+                    dnum, dscore = _template_classify_digit(crop)
                     if dnum >= 0:
-                        # store approx x (left)
                         classifier_tokens.append({"num": dnum, "conf": dscore, "x": x0, "src":"cls"})
                 except Exception:
                     continue
         else:
-            # fallback segmentation by contours (binarize and find bounding rects)
+            # fallback: detect connected components after binarization and classify
             try:
                 _, thr = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
                 cnts, _ = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -404,28 +398,27 @@ def _extract_day_hybrid(img: np.ndarray, box: Tuple[int,int,int,int]) -> Optiona
             except Exception:
                 pass
 
-        # ---------- Merge tokens ----------
-        merged = []
-        merged.extend(ocr_tokens)
-        merged.extend(tmpl_tokens)
-        merged.extend(classifier_tokens)
+        # Merge tokens
+        merged_tokens = []
+        merged_tokens.extend(ocr_candidates)
+        merged_tokens.extend(tmpl_tokens)
+        merged_tokens.extend(classifier_tokens)
 
-        if not merged:
-            logger.warning("No tokens from OCR/template/classifier in ROI.")
+        if not merged_tokens:
+            logger.warning("No tokens found in ROI by any method.")
             return None
 
-        # ---------- Build single-digit contributions ----------
+        # Build contributions per single digit
         contributions = defaultdict(list)  # num -> list of contributions {conf, src, x}
-        for t in merged:
+        for t in merged_tokens:
             n = int(t["num"])
             contributions[n].append({"conf": float(t["conf"]), "src": t.get("src","unk"), "x": t.get("x")})
 
-        # ---------- Build two-digit candidates from spatial ordering ----------
-        tokens_with_x = [t for t in merged if t.get("x") is not None]
+        # Try to build two-digit numbers by spatial ordering of tokens_with_x
+        tokens_with_x = [t for t in merged_tokens if t.get("x") is not None]
         if tokens_with_x:
             tokens_with_x.sort(key=lambda t: t["x"])
             roi_w = roi_gray.shape[1]
-            # combine neighbors
             for i in range(len(tokens_with_x)):
                 left = tokens_with_x[i]
                 for j in (i+1, i+2):
@@ -433,16 +426,14 @@ def _extract_day_hybrid(img: np.ndarray, box: Tuple[int,int,int,int]) -> Optiona
                         break
                     right = tokens_with_x[j]
                     dist = right["x"] - left["x"]
-                    # require reasonable proximity
-                    if dist < max(min(roi_w * 0.5, 80), 40):
+                    if dist < max(min(roi_w * 0.5, 100), 35):
                         num = left["num"]*10 + right["num"]
                         if 1 <= num <= 31:
                             contributions[num].append({"conf": float(left["conf"]), "src": left.get("src","unk"), "x": left.get("x")})
                             contributions[num].append({"conf": float(right["conf"]), "src": right.get("src","unk"), "x": right.get("x")})
 
-        # ---------- Scoring candidates ----------
-        # weights
-        WEIGHTS = {"ocr": 1.0, "cls": 0.85, "tmpl": 0.6, "unk": 0.5}
+        # Scoring candidates
+        WEIGHTS = {"ocr": 1.0, "cls": 0.9, "tmpl": 0.6, "unk": 0.5}
         candidate_metrics = {}
         for num, contribs in contributions.items():
             total_weighted = 0.0
@@ -462,81 +453,73 @@ def _extract_day_hybrid(img: np.ndarray, box: Tuple[int,int,int,int]) -> Optiona
                     count_ocr += 1
                 if src == "cls":
                     count_cls += 1
-            count = len(contribs)
-            avg_conf = (total_conf / count) if count>0 else 0.0
+            cnt = len(contribs)
+            avg_conf = (total_conf / cnt) if cnt>0 else 0.0
             span = (max(xs) - min(xs)) if xs else 0
-            # spatial penalty for too wide spans
-            span_penalty = 1.0
-            if span > max(roi_gray.shape[1] * 0.6, 120):
-                span_penalty = 0.5
-            # validity rule for two-digit
+            span_pen = 1.0
+            if span > max(roi_gray.shape[1]*0.6, 120):
+                span_pen = 0.5
             is_two = (10 <= num <= 31)
             valid_two = True
             if is_two:
-                # require at least one OCR or classifier evidence
                 if (count_ocr + count_cls) >= 1:
                     valid_two = True
                 else:
-                    # if only template matches, require both parts high conf
-                    # attempt to split by xs and check confs
                     if len(xs) >= 2:
-                        # sort contribs by x and pick two highest-conf positions
-                        contribs_spatial = sorted([c for c in contribs if c.get("x") is not None], key=lambda c:c["x"])
-                        left_conf = contribs_spatial[0]["conf"] if len(contribs_spatial)>0 else 0
-                        right_conf = contribs_spatial[1]["conf"] if len(contribs_spatial)>1 else 0
+                        sorted_cs = sorted([c for c in contribs if c.get("x") is not None], key=lambda c:c["x"])
+                        left_conf = sorted_cs[0]["conf"] if len(sorted_cs)>0 else 0
+                        right_conf = sorted_cs[1]["conf"] if len(sorted_cs)>1 else 0
                         if not (left_conf >= 80 and right_conf >= 80):
                             valid_two = False
                     else:
                         valid_two = False
-            final_score = total_weighted * span_penalty
+            final_score = total_weighted * span_pen
             candidate_metrics[num] = {
                 "final_score": final_score,
                 "avg_conf": avg_conf,
-                "count": count,
+                "count": cnt,
                 "count_ocr": count_ocr,
                 "count_cls": count_cls,
                 "span": span,
                 "valid_two": valid_two
             }
 
-        # ---------- Choose best candidate ----------
         if not candidate_metrics:
             return None
 
-        # prefer valid two-digit numbers, then by final_score, then avg_conf, then numeric desc
+        # pick best: prefer valid two-digit, then final_score, then avg_conf, then numeric
         sortable = []
         for num, m in candidate_metrics.items():
-            two_valid_flag = 1 if (10 <= num <= 31 and m["valid_two"]) else 0
-            # if two-digit but invalid, penalize the score
+            two_flag = 1 if (10 <= num <= 31 and m["valid_two"]) else 0
             score_val = m["final_score"]
             if 10 <= num <= 31 and not m["valid_two"]:
                 score_val *= 0.45
-            sortable.append((two_valid_flag, score_val, m["avg_conf"], num))
+            sortable.append((two_flag, score_val, m["avg_conf"], num))
         sortable.sort(key=lambda t: (-t[0], -t[1], -t[2], -t[3]))
 
-        chosen = int(sortable[0][3])
-        logger.info(f"Day candidates (agg): { {k: candidate_metrics[k] for k in sorted(candidate_metrics.keys())} }, selected: {chosen}")
-        return chosen
+        chosen_num = int(sortable[0][3])
+        # detailed debug log if debug level
+        logger.info(f"Day candidates (agg): { {k: candidate_metrics[k] for k in sorted(candidate_metrics.keys())} }, selected: {chosen_num}")
+        return chosen_num
 
     except Exception as e:
-        logger.error(f"Error extracting day (hybrid): {e}")
+        logger.error(f"Error in _extract_day_hybrid: {e}")
         return None
 
 # ---------------------------
-# Find time slots (uses PaddleOCR or pytesseract fallback)
+# Find time slots (PaddleOCR/pytesseract fallback)
 # ---------------------------
 def _find_time_slots(img: np.ndarray) -> List[Tuple[str,str]]:
     try:
         h = img.shape[0]
         bottom_part = img[h//4:, :].copy()
         gray = cv2.cvtColor(bottom_part, cv2.COLOR_BGR2GRAY)
-        # OCR
         raw = _ocr_read_text_on_image(gray)
         lines = []
         for text, conf, bbox in raw:
             if not text:
                 continue
-            t = text.replace('О','0').replace('о','0').replace('З','3').replace('з','3')
+            t = str(text).replace('О','0').replace('о','0').replace('З','3').replace('з','3')
             lines.append(t)
         full_text = "\n".join(lines)
         slots = []
@@ -551,7 +534,7 @@ def _find_time_slots(img: np.ndarray) -> List[Tuple[str,str]]:
                             slots.append((f"{h1:02d}:{m1:02d}", f"{h2:02d}:{m2:02d}"))
                 except Exception:
                     continue
-        # unique
+        # deduplicate
         uniq = []
         seen = set()
         for s in slots:
@@ -564,37 +547,39 @@ def _find_time_slots(img: np.ndarray) -> List[Tuple[str,str]]:
         return []
 
 # ---------------------------
-# Parser classes (API preserved)
+# Main parser classes (API preserved)
 # ---------------------------
 class NewFormatSlotParser:
-    """Parser for screenshots with yellow day highlight."""
+    """Парсер для скриншотов с выделением дня."""
     def __init__(self, debug: bool = False):
         self.debug = debug
         if debug:
             logger.setLevel(logging.DEBUG)
 
     def process_image(self, image_input: Any) -> List[Dict]:
+        # 1. read image
         img = _read_image(image_input)
         if img is None:
             logger.error("Failed to read image")
             return []
         logger.info(f"Processing image, shape: {img.shape}")
 
+        # 2. find yellow box
         yellow_box = _find_yellow_box(img)
         if yellow_box is None:
             logger.error("Yellow box not found")
             return []
-
+        # 3. extract day (hybrid)
         day = _extract_day_hybrid(img, yellow_box)
         if day is None:
             logger.error("Could not extract day from yellow box")
-            # fallback - current day
+            # fallback to current day
             day = datetime.now().day
             if day < 1 or day > 31:
                 day = 1
             logger.warning(f"Using fallback day: {day}")
 
-        # Build date
+        # 4. build iso date
         try:
             slot_date = date(FIXED_YEAR, FIXED_MONTH, day)
             iso_date = slot_date.isoformat()
@@ -603,11 +588,13 @@ class NewFormatSlotParser:
             logger.error(f"Invalid date: {e}")
             return []
 
+        # 5. find time slots
         time_slots = _find_time_slots(img)
         if not time_slots:
             logger.warning(f"No time slots found for {iso_date}")
             return []
 
+        # 6. build result
         result = []
         for start_time, end_time in time_slots:
             slot = {
@@ -621,6 +608,7 @@ class NewFormatSlotParser:
         return result
 
 class MemorySlotParser:
+    """Парсер для обработки скриншотов из памяти."""
     def __init__(self, debug: bool = False):
         self.debug = debug
         self.parser = NewFormatSlotParser(debug=debug)
@@ -648,7 +636,7 @@ class MemorySlotParser:
             logger.error(f"Error: {e}")
             return []
 
-    def process_screenshot(self, image_bytes: BytesIO, is_last: bool = False) -> List[Dict]:
+    def process_screenshot(self, image_bytes: BytesIO, is_last: bool=False) -> List[Dict]:
         return self.process_screenshot_from_memory(image_bytes, is_last)
 
     def process_image(self, image_input: Any) -> List[Dict]:
@@ -702,6 +690,7 @@ class MemorySlotParser:
         return self.get_all_slots()
 
 class SlotParser:
+    """Парсер для папки со скриншотами."""
     def __init__(self, base_path: str, debug: bool = False):
         self.base_path = base_path
         self.parser = NewFormatSlotParser(debug=debug)

@@ -2,8 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 OCR-модуль для извлечения слотов из скриншотов.
-HYBRID версия: PaddleOCR (если доступен) + pytesseract (fallback) + template-based classifier & matching.
-Сохраняет прежний API и структуру (NewFormatSlotParser, MemorySlotParser, SlotParser).
+Новая детерминированная версия: строгий pipeline для извлечения числа в жёлтом квадратике.
+Подход: многоступенчатая предобработка + template-classifier (edge templates) + агрегация.
+Сохраняет прежний API и структуру.
 """
 
 import os
@@ -13,21 +14,13 @@ import math
 from datetime import date, datetime
 from typing import List, Dict, Optional, Tuple, Any
 from io import BytesIO
-from collections import defaultdict
+from collections import defaultdict, Counter
 
 import cv2
 import numpy as np
 from PIL import Image
 
-# Try to import PaddleOCR (preferred)
-try:
-    from paddleocr import PaddleOCR
-    _PADDLE_AVAILABLE = True
-except Exception:
-    PaddleOCR = None
-    _PADDLE_AVAILABLE = False
-
-# Try to import pytesseract (fallback)
+# Optional fallback OCR
 try:
     import pytesseract
     _PYTESSERACT_AVAILABLE = True
@@ -38,7 +31,7 @@ except Exception:
 logger = logging.getLogger("lavka.ocr_module")
 logger.setLevel(logging.INFO)
 
-# --------- Константы ---------
+# --------- Constants ---------
 FIXED_YEAR = 2025
 FIXED_MONTH = 10
 
@@ -48,34 +41,8 @@ TIME_RANGE_PATTERNS = [
     re.compile(r"(\d{2})(\d{2})\s*[-–—]\s*(\d{2})(\d{2})"),
 ]
 
-# --------- Initialize PaddleOCR safely (various versions) ---------
-def _init_paddle_reader():
-    if not _PADDLE_AVAILABLE:
-        logger.info("PaddleOCR not installed; will use pytesseract/template fallbacks.")
-        return None
-    # try a couple init signatures to support different paddleocr versions
-    try:
-        reader = PaddleOCR(use_angle_cls=False, lang="en")
-        logger.info("Initialized PaddleOCR (use_angle_cls=False, lang='en').")
-        return reader
-    except TypeError:
-        # maybe older/newer signature
-        try:
-            reader = PaddleOCR(lang="en")
-            logger.info("Initialized PaddleOCR (lang='en').")
-            return reader
-        except Exception as e:
-            logger.warning(f"PaddleOCR init fallback failed: {e}")
-            return None
-    except Exception as e:
-        logger.warning(f"PaddleOCR init failed: {e}")
-        return None
-
-_PADDLE_READER = _init_paddle_reader()
-
-# --------- Helper functions (image IO, find yellow box) ---------
+# --------- Image IO helpers ---------
 def _read_image(image_input: Any) -> Optional[np.ndarray]:
-    """Read image from path/bytes/BytesIO/PIL.Image -> BGR numpy array"""
     try:
         if isinstance(image_input, str):
             if not os.path.exists(image_input):
@@ -102,16 +69,17 @@ def _read_image(image_input: Any) -> Optional[np.ndarray]:
         logger.error(f"Error reading image: {e}")
         return None
 
+# --------- Find yellow box (same logic, tuned) ---------
 def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
-    """Find the yellow square region (top half) and return (x,y,w,h) or None"""
     try:
         hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-        # Slightly broader yellow/orange range
+        # Slightly robust yellow range
         lower = np.array([8, 60, 60])
         upper = np.array([40, 255, 255])
         mask = cv2.inRange(hsv, lower, upper)
         h = mask.shape[0]
-        mask[h//2:, :] = 0  # search only top half
+        # calendar is at top; keep top half only
+        mask[h//2:, :] = 0
         kernel = np.ones((5,5), np.uint8)
         mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
         mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
@@ -121,7 +89,7 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
         valid = []
         for cnt in contours:
             area = cv2.contourArea(cnt)
-            if area < 400:  # slightly smaller threshold
+            if area < 400:
                 continue
             x,y,w,h = cv2.boundingRect(cnt)
             ar = w / float(h) if h>0 else 0
@@ -129,7 +97,7 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
                 valid.append((x,y,w,h,area))
         if not valid:
             return None
-        valid.sort(key=lambda b: b[4], reverse=True)
+        valid.sort(key=lambda x: x[4], reverse=True)
         best = valid[0][:4]
         logger.info(f"Found yellow box at ({best[0]}, {best[1]}) size ({best[2]}x{best[3]})")
         return best
@@ -137,13 +105,11 @@ def _find_yellow_box(img: np.ndarray) -> Optional[Tuple[int,int,int,int]]:
         logger.error(f"Error finding yellow box: {e}")
         return None
 
-# ---------------------------
-# Template digit creation & classifier (no ML libs required)
-# ---------------------------
-def _make_edge_templates(sizes=(28,36,48)):
+# --------- Template digits creation (edge templates) ---------
+def _make_templates(sizes=(28,36,48)):
     tpls = {}
     for size in sizes:
-        tpl_dict = {}
+        digit_map = {}
         for d in range(10):
             canvas = np.ones((size, size), dtype=np.uint8) * 255
             font_scale = size / 40.0
@@ -151,380 +117,332 @@ def _make_edge_templates(sizes=(28,36,48)):
             ((tw, th), _) = cv2.getTextSize(str(d), cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
             org = ((size - tw)//2, (size + th)//2)
             cv2.putText(canvas, str(d), org, cv2.FONT_HERSHEY_SIMPLEX, font_scale, (0,), thickness, cv2.LINE_AA)
-            tpl_edge = cv2.Canny(canvas, 50, 150)
-            tpl_dict[d] = tpl_edge
-        tpls[size] = tpl_dict
+            edge = cv2.Canny(canvas, 50, 150)
+            digit_map[d] = edge
+        tpls[size] = digit_map
     return tpls
 
-_DIGIT_TEMPLATES = _make_edge_templates((28,36,48))
+_TEMPLATES = _make_templates((28,36,48))
 
-def _template_classify_digit(digit_img_gray: np.ndarray) -> Tuple[int, float]:
-    """
-    Classify a grayscale image (single digit crop) by matching to edge templates.
-    Returns (digit, score 0..100). If uncertain returns (-1, 0.0).
-    """
+# compute similarity between two binary edge images
+def _edge_similarity(a: np.ndarray, b: np.ndarray) -> float:
+    """Return similarity in [0..1] based on normalized L2 distance."""
     try:
-        edges = cv2.Canny(digit_img_gray, 50, 150)
-        h0, w0 = edges.shape[:2]
-        best_digit = -1
+        a_f = a.astype(np.float32)/255.0
+        b_f = b.astype(np.float32)/255.0
+        dist = np.linalg.norm(a_f - b_f)
+        max_norm = math.sqrt(a.shape[0]*a.shape[1]) + 1e-6
+        sim = max(0.0, 1.0 - dist/max_norm)
+        return sim
+    except Exception:
+        return 0.0
+
+# Classify single digit patch using templates (search across sizes)
+def _classify_digit_patch(patch_gray: np.ndarray) -> Tuple[int, float]:
+    """Return (digit, score0..100). If not confident, return (-1, 0.0)."""
+    try:
+        # edges
+        edges = cv2.Canny(patch_gray, 50, 150)
+        h, w = edges.shape
+        best_d = -1
         best_score = 0.0
-        for size, tpl_dict in _DIGIT_TEMPLATES.items():
-            # normalize to square canvas
-            maxi = max(h0, w0, 1)
-            canvas = np.ones((maxi, maxi), dtype=np.uint8) * 0
-            y_off = (maxi - h0)//2
-            x_off = (maxi - w0)//2
-            canvas[y_off:y_off+h0, x_off:x_off+w0] = edges
+        for size, digit_map in _TEMPLATES.items():
+            # center on square, resize to size
+            maxi = max(h,w,1)
+            canvas = np.zeros((maxi, maxi), dtype=np.uint8)
+            y_off = (maxi - h)//2
+            x_off = (maxi - w)//2
+            canvas[y_off:y_off+h, x_off:x_off+w] = edges
             try:
                 resized = cv2.resize(canvas, (size, size), interpolation=cv2.INTER_CUBIC)
             except Exception:
                 continue
-            for d, tpl in tpl_dict.items():
-                # compute similarity (1 - normalized L2)
-                tpl_f = tpl.astype(np.float32) / 255.0
-                r_f = resized.astype(np.float32) / 255.0
-                dist = np.linalg.norm(tpl_f - r_f)
-                norm_max = math.sqrt(size*size)
-                sim = max(0.0, 1.0 - (dist / (norm_max + 1e-6)))
-                score = sim * 100.0
+            for d, tpl in digit_map.items():
+                s = _edge_similarity(resized, tpl)
+                score = s * 100.0
                 if score > best_score:
                     best_score = score
-                    best_digit = d
-        if best_digit < 0:
+                    best_d = d
+        if best_score < 40.0:
+            # not confident
             return (-1, 0.0)
-        return (int(best_digit), float(best_score))
+        return (best_d, best_score)
     except Exception as e:
-        logger.debug(f"template classifier error: {e}")
+        logger.debug(f"classify_digit_patch error: {e}")
         return (-1, 0.0)
 
-def _nms_peaks(res, tpl_w, tpl_h, thresh=0.55):
-    """Simple NMS for matchTemplate results, returns list of (x,y,score) peaks above thresh."""
-    matches = []
-    sm = res.copy()
-    while True:
-        minVal, maxVal, minLoc, maxLoc = cv2.minMaxLoc(sm)
-        if maxVal < thresh:
-            break
-        mx, my = maxLoc
-        matches.append((mx, my, float(maxVal)))
-        # zero neighborhood
-        x0, y0 = mx, my
-        x1 = max(0, x0 - tpl_w//2); y1 = max(0, y0 - tpl_h//2)
-        x2 = min(sm.shape[1], x0 + tpl_w//2); y2 = min(sm.shape[0], y0 + tpl_h//2)
-        sm[y1:y2, x1:x2] = 0
-    return matches
-
-def _match_templates_on_roi_edges(roi_gray: np.ndarray, thr_high=0.58, thr_low=0.45):
-    """Return list of matches dicts: {'digit', 'x', 'y', 'score', 'src'} sorted by x"""
-    edges = cv2.Canny(roi_gray, 50, 150)
-    matches_out = []
-    for size, tpl_dict in _DIGIT_TEMPLATES.items():
-        for d, tpl_edge in tpl_dict.items():
-            th, tw = tpl_edge.shape
-            if edges.shape[0] < th or edges.shape[1] < tw:
-                continue
-            try:
-                res = cv2.matchTemplate(edges, tpl_edge, cv2.TM_CCOEFF_NORMED)
-            except Exception:
-                continue
-            peaks = _nms_peaks(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=thr_high)
-            if not peaks:
-                peaks = _nms_peaks(res, tpl_edge.shape[1], tpl_edge.shape[0], thresh=thr_low)
-            for mx, my, score in peaks:
-                matches_out.append({"digit": int(d), "x": int(mx), "y": int(my), "score": float(score*100.0), "src":"tmpl"})
-    matches_out.sort(key=lambda m: m["x"])
-    return matches_out
-
-# ---------------------------
-# OCR wrapper: PaddleOCR preferred, pytesseract fallback
-# ---------------------------
-def _ocr_read_text_on_image(img: np.ndarray) -> List[Tuple[str, float, Tuple[int,int,int,int]]]:
+# --------- Deterministic extraction pipeline for day ---------
+def _extract_day_deterministic(img: np.ndarray, box: Tuple[int,int,int,int], debug: bool=False) -> Optional[int]:
     """
-    Return list of (text, conf(0..100), bbox=(x_min,y_min,x_max,y_max)).
-    Accepts BGR or grayscale image (numpy).
-    """
-    out = []
-    try:
-        # prepare RGB for paddle if necessary
-        if _PADDLE_READER is not None:
-            try:
-                # paddleocr expects RGB image (H x W x 3) numpy
-                img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) if len(img.shape)==3 else cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
-                raw = _PADDLE_READER.ocr(img_rgb, cls=False)
-                # raw format: list of [ [box_points], (text, score) ] OR nested; handle both
-                for line in raw:
-                    try:
-                        box = line[0]
-                        text = line[1][0] if isinstance(line[1], (list,tuple)) and len(line[1])>0 else (line[1] if isinstance(line[1], str) else "")
-                        conf = float(line[1][1]) if isinstance(line[1], (list,tuple)) and len(line[1])>1 else 0.0
-                        xs = [int(p[0]) for p in box]; ys = [int(p[1]) for p in box]
-                        out.append((text, conf*100.0, (min(xs), min(ys), max(xs), max(ys))))
-                    except Exception:
-                        # Some versions return simpler tuples
-                        try:
-                            text = str(line[1])
-                            conf = 0.0
-                            out.append((text, conf, (0,0,img.shape[1], img.shape[0])))
-                        except Exception:
-                            continue
-                return out
-            except Exception as e:
-                logger.debug(f"PaddleOCR read error, falling back: {e}")
-        # pytesseract fallback
-        if _PYTESSERACT_AVAILABLE:
-            try:
-                # get data with box info
-                data = pytesseract.image_to_data(img, output_type=pytesseract.Output.DICT, config='-c tessedit_char_whitelist=0123456789/: ')
-                n = len(data.get("text", []))
-                for i in range(n):
-                    txt = (data["text"][i] or "").strip()
-                    if not txt:
-                        continue
-                    conf_raw = data.get("conf", [])[i]
-                    try:
-                        conf = float(conf_raw)
-                    except Exception:
-                        conf = -1.0
-                    x = int(data.get("left", [0])[i])
-                    y = int(data.get("top", [0])[i])
-                    w = int(data.get("width", [0])[i])
-                    h = int(data.get("height", [0])[i])
-                    out.append((txt, conf, (x,y,x+w,y+h)))
-                return out
-            except Exception as e:
-                logger.debug(f"pytesseract read error: {e}")
-        # If no OCR engines, return empty
-        logger.debug("No OCR engine available (PaddleOCR/pytesseract).")
-        return out
-    except Exception as e:
-        logger.error(f"_ocr_read_text_on_image error: {e}")
-        return out
-
-# ---------------------------
-# Hybrid day extraction
-# ---------------------------
-def _extract_day_hybrid(img: np.ndarray, box: Tuple[int,int,int,int]) -> Optional[int]:
-    """
-    Hybrid extraction: crop ROI, preprocess, get OCR tokens (multi-scale),
-    get template matches, classify digit crops, aggregate with weights and rules.
-    Returns integer day 1..31 or None.
+    Deterministic pipeline:
+      - crop ROI exactly
+      - run several preprocessings (CLAHE, adaptive threshold, Otsu, invert)
+      - for each preprocess: find contours/components -> filter by size -> classify patches
+      - compose single-digit and two-digit candidates by spatial adjacency
+      - aggregate across preprocessings and pick consensus (most frequent / highest score)
+      - fallback to pytesseract if nothing found
     """
     try:
         x,y,w,h = box
-        # crop with small padding
-        pad = max(0, int(min(w,h)*0.05))
+        pad = max(0, int(min(w,h) * 0.06))
         x1, y1 = max(0, x-pad), max(0, y-pad)
         x2, y2 = min(img.shape[1], x+w+pad), min(img.shape[0], y+h+pad)
-        roi_bgr = img[y1:y2, x1:x2].copy()
-        if roi_bgr.size == 0:
+        roi = img[y1:y2, x1:x2].copy()
+        if roi.size == 0:
+            logger.warning("Empty ROI")
             return None
 
-        # Preprocess ROI: LAB + CLAHE on L, then slight blur
-        lab = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2LAB)
-        l, a, b = cv2.split(lab)
-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-        l2 = clahe.apply(l)
-        lab2 = cv2.merge((l2,a,b))
-        roi_bgr2 = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
-        roi_gray = cv2.cvtColor(roi_bgr2, cv2.COLOR_BGR2GRAY)
-        roi_gray = cv2.medianBlur(roi_gray, 3)
+        # Preprocessing variants
+        candidates_all = []  # list of (num, score)
+        debug_info = []
 
-        # Multi-scale OCR candidates
-        ocr_candidates = []  # dicts: {"num", "conf", "x", "src"}
-        scales = [1.5, 2.5]  # avoid too big to speed up
-        for s in scales:
+        def do_variant(gray: np.ndarray, variant_name: str):
+            """Process one grayscale variant: threshold, find contours, classify."""
+            local_candidates = []
+            # Apply several binarizations: adaptive, otsu, inverted variants
+            threshings = []
             try:
-                H0, W0 = roi_gray.shape
-                img_s = cv2.resize(roi_gray, (int(W0*s), int(H0*s)), interpolation=cv2.INTER_CUBIC)
-            except Exception:
-                img_s = roi_gray.copy()
-            ocr_out = _ocr_read_text_on_image(img_s)
-            for text, conf, bbox in ocr_out:
-                if not text:
-                    continue
-                tnorm = str(text).replace(' ', '').replace('O','0').replace('o','0').replace('l','1').replace('I','1')
-                left_part = tnorm.split('/')[0] if '/' in tnorm else tnorm
-                nums = re.findall(r'\d{1,2}', left_part)
-                # map bbox left coordinate back to ROI space if available
-                x_coord = None
-                if bbox:
-                    bx = bbox[0]
-                    try:
-                        x_coord = int(bx / s)
-                    except Exception:
-                        x_coord = None
-                for nstr in nums:
-                    numv = int(nstr)
-                    if 1 <= numv <= 31:
-                        ocr_candidates.append({"num": numv, "conf": float(conf), "x": x_coord, "src":"ocr"})
-
-        # Template matches
-        tmpl_matches = _match_templates_on_roi_edges(roi_gray)
-        tmpl_tokens = [{"num": m["digit"], "conf": m["score"], "x": m["x"], "src":"tmpl"} for m in tmpl_matches]
-
-        # Classifier tokens (try to crop around template matches, else find contours)
-        classifier_tokens = []
-        if tmpl_matches:
-            # use positions to create crops and classify
-            for m in tmpl_matches:
-                try:
-                    cx = m["x"]
-                    H, W = roi_gray.shape
-                    # try cropping a box around expected digit region
-                    wbox = max(12, int(W*0.25))
-                    x0 = max(0, cx - wbox//2)
-                    x1c = min(W, cx + wbox//2)
-                    crop = roi_gray[:, x0:x1c]
-                    if crop.size == 0:
-                        continue
-                    dnum, dscore = _template_classify_digit(crop)
-                    if dnum >= 0:
-                        classifier_tokens.append({"num": dnum, "conf": dscore, "x": x0, "src":"cls"})
-                except Exception:
-                    continue
-        else:
-            # fallback: detect connected components after binarization and classify
-            try:
-                _, thr = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-                cnts, _ = cv2.findContours(thr, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                for cnt in cnts:
-                    x0,y0,w0,h0 = cv2.boundingRect(cnt)
-                    if w0 < 6 or h0 < 8:
-                        continue
-                    crop = roi_gray[y0:y0+h0, x0:x0+w0]
-                    dnum, dscore = _template_classify_digit(crop)
-                    if dnum >= 0:
-                        classifier_tokens.append({"num": dnum, "conf": dscore, "x": x0, "src":"cls"})
+                # adaptive
+                thr_adap = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                                cv2.THRESH_BINARY_INV if gray.mean() > 127 else cv2.THRESH_BINARY_INV,
+                                                11, 2)
+                threshings.append(("adap", thr_adap))
             except Exception:
                 pass
-
-        # Merge tokens
-        merged_tokens = []
-        merged_tokens.extend(ocr_candidates)
-        merged_tokens.extend(tmpl_tokens)
-        merged_tokens.extend(classifier_tokens)
-
-        if not merged_tokens:
-            logger.warning("No tokens found in ROI by any method.")
-            return None
-
-        # Build contributions per single digit
-        contributions = defaultdict(list)  # num -> list of contributions {conf, src, x}
-        for t in merged_tokens:
-            n = int(t["num"])
-            contributions[n].append({"conf": float(t["conf"]), "src": t.get("src","unk"), "x": t.get("x")})
-
-        # Try to build two-digit numbers by spatial ordering of tokens_with_x
-        tokens_with_x = [t for t in merged_tokens if t.get("x") is not None]
-        if tokens_with_x:
-            tokens_with_x.sort(key=lambda t: t["x"])
-            roi_w = roi_gray.shape[1]
-            for i in range(len(tokens_with_x)):
-                left = tokens_with_x[i]
-                for j in (i+1, i+2):
-                    if j >= len(tokens_with_x):
-                        break
-                    right = tokens_with_x[j]
-                    dist = right["x"] - left["x"]
-                    if dist < max(min(roi_w * 0.5, 100), 35):
-                        num = left["num"]*10 + right["num"]
-                        if 1 <= num <= 31:
-                            contributions[num].append({"conf": float(left["conf"]), "src": left.get("src","unk"), "x": left.get("x")})
-                            contributions[num].append({"conf": float(right["conf"]), "src": right.get("src","unk"), "x": right.get("x")})
-
-        # Scoring candidates
-        WEIGHTS = {"ocr": 1.0, "cls": 0.9, "tmpl": 0.6, "unk": 0.5}
-        candidate_metrics = {}
-        for num, contribs in contributions.items():
-            total_weighted = 0.0
-            total_conf = 0.0
-            xs = []
-            count_ocr = 0
-            count_cls = 0
-            for c in contribs:
-                src = c.get("src","unk")
-                conf = float(c.get("conf", 0.0))
-                wsrc = WEIGHTS.get(src, 0.5)
-                total_weighted += conf * wsrc
-                total_conf += conf
-                if c.get("x") is not None:
-                    xs.append(int(c["x"]))
-                if src == "ocr":
-                    count_ocr += 1
-                if src == "cls":
-                    count_cls += 1
-            cnt = len(contribs)
-            avg_conf = (total_conf / cnt) if cnt>0 else 0.0
-            span = (max(xs) - min(xs)) if xs else 0
-            span_pen = 1.0
-            if span > max(roi_gray.shape[1]*0.6, 120):
-                span_pen = 0.5
-            is_two = (10 <= num <= 31)
-            valid_two = True
-            if is_two:
-                if (count_ocr + count_cls) >= 1:
-                    valid_two = True
+            try:
+                # OTSU normal and inverted
+                _, thr_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                thr_inv = cv2.bitwise_not(thr_otsu)
+                threshings.append(("otsu", thr_otsu))
+                threshings.append(("otsu_inv", thr_inv))
+            except Exception:
+                pass
+            # morphological cleanup for each threshold
+            kern = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
+            for tname, thr in threshings:
+                try:
+                    thr_clean = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, kern, iterations=1)
+                    thr_clean = cv2.morphologyEx(thr_clean, cv2.MORPH_OPEN, kern, iterations=1)
+                except Exception:
+                    thr_clean = thr
+                # find contours (digits are dark on bright or bright on dark depending)
+                cnts, _ = cv2.findContours(thr_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                rects = []
+                H, W = thr_clean.shape
+                for cnt in cnts:
+                    x0,y0,w0,h0 = cv2.boundingRect(cnt)
+                    # filter by relative size: digit boxes are not tiny and not the whole box
+                    if w0 < 6 or h0 < 8:
+                        continue
+                    if w0 > W*0.9 and h0 > H*0.9:
+                        continue
+                    rects.append((x0,y0,w0,h0))
+                # if no rects found, try connected components
+                if not rects:
+                    try:
+                        nb_components, labels, stats, centroids = cv2.connectedComponentsWithStats(thr_clean, connectivity=8)
+                        for i in range(1, nb_components):
+                            x0,y0,w0,h0,area = stats[i]
+                            if w0 < 6 or h0 < 8 or area < 20:
+                                continue
+                            rects.append((x0,y0,w0,h0))
+                    except Exception:
+                        pass
+                # Merge overlapping rects (to avoid splitting digits)
+                rects = _merge_rects(rects)
+                # classify each rect
+                digit_entries = []
+                for (rx,ry,rw,rh) in rects:
+                    try:
+                        padc = 2
+                        xA = max(0, rx-padc); yA = max(0, ry-padc)
+                        xB = min(W, rx+rw+padc); yB = min(H, ry+rh+padc)
+                        patch = thr_clean[yA:yB, xA:xB]
+                        # For classification we want grayscale patch (not binary) to detect edges robustly
+                        # Map patch back to grayscale coordinates
+                        patch_gray = gray[yA:yB, xA:xB]
+                        # classify using edge templates
+                        d, s = _classify_digit_patch_from_gray(patch_gray)
+                        if d >= 0:
+                            digit_entries.append({"digit": d, "score": s, "x": xA, "w": xB-xA})
+                    except Exception:
+                        continue
+                # Now try to form numbers from digit_entries by proximity
+                if digit_entries:
+                    digit_entries.sort(key=lambda it: it["x"])
+                    # Single-digit candidates
+                    for de in digit_entries:
+                        local_candidates.append((de["digit"], de["score"]))
+                    # Two-digit candidates by neighbor combination
+                    for i in range(len(digit_entries)):
+                        for j in (i+1, i+2):
+                            if j >= len(digit_entries):
+                                break
+                            left = digit_entries[i]; right = digit_entries[j]
+                            dist = right["x"] - left["x"]
+                            # require reasonable proximity
+                            if dist < max(min(W*0.6, 120), 40):
+                                num = left["digit"]*10 + right["digit"]
+                                if 1 <= num <= 31:
+                                    score_sum = (left["score"] + right["score"]) / 2.0
+                                    local_candidates.append((num, score_sum))
+                # If nothing found within rects but thr had large connected area, try OCR fallback on thr area
+                if not local_candidates and _PYTESSERACT_AVAILABLE:
+                    try:
+                        ocr_text = pytesseract.image_to_string(thr_clean, config='-c tessedit_char_whitelist=0123456789/ ')
+                        nums = re.findall(r'\d{1,2}', ocr_text)
+                        for nstr in nums:
+                            n = int(nstr)
+                            if 1 <= n <= 31:
+                                local_candidates.append((n, 50.0))
+                    except Exception:
+                        pass
+                # collect local candidates for this threshold
+                if local_candidates:
+                    # log debug
+                    debug_info.append({"variant": variant_name, "threshold": tname, "found": list(local_candidates)})
                 else:
-                    if len(xs) >= 2:
-                        sorted_cs = sorted([c for c in contribs if c.get("x") is not None], key=lambda c:c["x"])
-                        left_conf = sorted_cs[0]["conf"] if len(sorted_cs)>0 else 0
-                        right_conf = sorted_cs[1]["conf"] if len(sorted_cs)>1 else 0
-                        if not (left_conf >= 80 and right_conf >= 80):
-                            valid_two = False
-                    else:
-                        valid_two = False
-            final_score = total_weighted * span_pen
-            candidate_metrics[num] = {
-                "final_score": final_score,
-                "avg_conf": avg_conf,
-                "count": cnt,
-                "count_ocr": count_ocr,
-                "count_cls": count_cls,
-                "span": span,
-                "valid_two": valid_two
-            }
+                    debug_info.append({"variant": variant_name, "threshold": tname, "found": []})
+                candidates_all.extend(local_candidates)
 
-        if not candidate_metrics:
+        # Generate grayscale variants: CLAHE on L channel + raw gray + contrast stretched
+        roi_gray_orig = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        # CLAHE variant
+        try:
+            lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
+            l,a,b = cv2.split(lab)
+            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
+            l2 = clahe.apply(l)
+            lab2 = cv2.merge((l2,a,b))
+            roi_clahe = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
+            roi_clahe_gray = cv2.cvtColor(roi_clahe, cv2.COLOR_BGR2GRAY)
+        except Exception:
+            roi_clahe_gray = roi_gray_orig.copy()
+        # Contrast stretch variant
+        try:
+            p2, p98 = np.percentile(roi_gray_orig, (2,98))
+            roi_stretch = cv2.normalize(roi_gray_orig, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+            roi_stretch = np.clip((roi_gray_orig - p2) * 255.0 / (p98 - p2 + 1e-6), 0, 255).astype(np.uint8)
+        except Exception:
+            roi_stretch = roi_gray_orig.copy()
+
+        # Run variants
+        do_variant(roi_gray_orig, "orig")
+        do_variant(roi_clahe_gray, "clahe")
+        do_variant(roi_stretch, "stretch")
+
+        if debug:
+            logger.debug(f"Deterministic extract debug_info: {debug_info}")
+
+        # aggregate candidates_all -> choose best by frequency and score
+        if not candidates_all:
+            # Last resort: direct OCR on ROI using pytesseract
+            if _PYTESSERACT_AVAILABLE:
+                try:
+                    txt = pytesseract.image_to_string(roi_gray_orig, config='-c tessedit_char_whitelist=0123456789/ ')
+                    nums = re.findall(r'\d{1,2}', txt)
+                    if nums:
+                        n = int(nums[0])
+                        if 1 <= n <= 31:
+                            logger.info(f"Fallback pytesseract found: {n}")
+                            return n
+                except Exception:
+                    pass
+            logger.warning("No candidates found by deterministic pipeline")
             return None
 
-        # pick best: prefer valid two-digit, then final_score, then avg_conf, then numeric
+        # Build score aggregation: for each candidate number accumulate counts and weighted score
+        agg = {}
+        for num, score in candidates_all:
+            rec = agg.setdefault(num, {"count":0, "score_sum":0.0})
+            rec["count"] += 1
+            rec["score_sum"] += float(score)
+        # compute final metric: prefer higher count, then higher average score, then larger numeric (to break ties)
         sortable = []
-        for num, m in candidate_metrics.items():
-            two_flag = 1 if (10 <= num <= 31 and m["valid_two"]) else 0
-            score_val = m["final_score"]
-            if 10 <= num <= 31 and not m["valid_two"]:
-                score_val *= 0.45
-            sortable.append((two_flag, score_val, m["avg_conf"], num))
-        sortable.sort(key=lambda t: (-t[0], -t[1], -t[2], -t[3]))
-
-        chosen_num = int(sortable[0][3])
-        # detailed debug log if debug level
-        logger.info(f"Day candidates (agg): { {k: candidate_metrics[k] for k in sorted(candidate_metrics.keys())} }, selected: {chosen_num}")
+        for num, v in agg.items():
+            avg = v["score_sum"] / v["count"] if v["count"]>0 else 0.0
+            sortable.append((v["count"], avg, num))
+        sortable.sort(key=lambda t: (-t[0], -t[1], -t[2]))
+        best = sortable[0]
+        chosen_num = int(best[2])
+        logger.info(f"Deterministic candidates: { {k:v for k,v in agg.items()} }, selected: {chosen_num}")
         return chosen_num
 
     except Exception as e:
-        logger.error(f"Error in _extract_day_hybrid: {e}")
+        logger.error(f"Error in _extract_day_deterministic: {e}")
         return None
 
 # ---------------------------
-# Find time slots (PaddleOCR/pytesseract fallback)
+# Helper: merge rects by overlap
+# ---------------------------
+def _merge_rects(rects: List[Tuple[int,int,int,int]]) -> List[Tuple[int,int,int,int]]:
+    if not rects:
+        return []
+    # naive merging: sort by x and merge overlapping/close rects
+    rects_sorted = sorted(rects, key=lambda r: r[0])
+    merged = []
+    cur = rects_sorted[0]
+    for r in rects_sorted[1:]:
+        x1,y1,w1,h1 = cur
+        x2,y2,w2,h2 = r
+        # if intersect or close horizontally
+        if x2 <= x1 + w1 + max(4, int(0.1*w1)):
+            # merge
+            nx = min(x1, x2)
+            ny = min(y1, y2)
+            nw = max(x1+w1, x2+w2) - nx
+            nh = max(y1+h1, y2+h2) - ny
+            cur = (nx, ny, nw, nh)
+        else:
+            merged.append(cur)
+            cur = r
+    merged.append(cur)
+    return merged
+
+# small wrapper for classifying using templates on raw grayscale patch
+def _classify_digit_patch_from_gray(patch_gray: np.ndarray) -> Tuple[int, float]:
+    """
+    Pre-normalize patch then call _classify_digit_patch which expects grayscale patch.
+    """
+    try:
+        # resize small patches if too tiny
+        h,w = patch_gray.shape
+        if h < 6 or w < 6:
+            # upsample
+            factor = max(2, int(6.0 / min(h,w)))
+            patch_gray = cv2.resize(patch_gray, (w*factor, h*factor), interpolation=cv2.INTER_CUBIC)
+        # apply small blur to reduce aliasing
+        patch_gray = cv2.GaussianBlur(patch_gray, (3,3), 0)
+        # Ensure contrast normalization
+        patch_gray = cv2.normalize(patch_gray, None, 0, 255, cv2.NORM_MINMAX)
+        return _classify_digit_patch(patch_gray)
+    except Exception as e:
+        logger.debug(f"_classify_digit_patch_from_gray error: {e}")
+        return (-1, 0.0)
+
+# ---------------------------
+# Time slots detection - use pytesseract if available, else try rough heuristic
 # ---------------------------
 def _find_time_slots(img: np.ndarray) -> List[Tuple[str,str]]:
     try:
         h = img.shape[0]
-        bottom_part = img[h//4:, :].copy()
-        gray = cv2.cvtColor(bottom_part, cv2.COLOR_BGR2GRAY)
-        raw = _ocr_read_text_on_image(gray)
-        lines = []
-        for text, conf, bbox in raw:
-            if not text:
-                continue
-            t = str(text).replace('О','0').replace('о','0').replace('З','3').replace('з','3')
-            lines.append(t)
-        full_text = "\n".join(lines)
+        bottom = img[h//4:, :].copy()
+        gray = cv2.cvtColor(bottom, cv2.COLOR_BGR2GRAY)
+        text = ""
+        if _PYTESSERACT_AVAILABLE:
+            try:
+                text = pytesseract.image_to_string(gray, config='-c tessedit_char_whitelist=0123456789:.- –— ')
+            except Exception:
+                text = ""
+        # fallback naive recognition by looking for patterns in raw pixels via OCR-like heuristics is complex;
+        # so if pytesseract not available we return empty
+        if not text:
+            return []
+        # normalize some cyrillic-looking chars
+        text = text.replace('О','0').replace('о','0').replace('З','3').replace('з','3')
         slots = []
         for pattern in TIME_RANGE_PATTERNS:
-            matches = pattern.findall(full_text)
+            matches = pattern.findall(text)
             for match in matches:
                 try:
                     h1,m1,h2,m2 = match
@@ -534,7 +452,7 @@ def _find_time_slots(img: np.ndarray) -> List[Tuple[str,str]]:
                             slots.append((f"{h1:02d}:{m1:02d}", f"{h2:02d}:{m2:02d}"))
                 except Exception:
                     continue
-        # deduplicate
+        # uniq
         uniq = []
         seen = set()
         for s in slots:
@@ -543,43 +461,41 @@ def _find_time_slots(img: np.ndarray) -> List[Tuple[str,str]]:
                 uniq.append(s)
         return uniq
     except Exception as e:
-        logger.error(f"Error finding time slots: {e}")
+        logger.error(f"Error in _find_time_slots: {e}")
         return []
 
 # ---------------------------
 # Main parser classes (API preserved)
 # ---------------------------
 class NewFormatSlotParser:
-    """Парсер для скриншотов с выделением дня."""
+    """Parser for screenshots with yellow highlight day."""
     def __init__(self, debug: bool = False):
         self.debug = debug
         if debug:
             logger.setLevel(logging.DEBUG)
 
     def process_image(self, image_input: Any) -> List[Dict]:
-        # 1. read image
         img = _read_image(image_input)
         if img is None:
             logger.error("Failed to read image")
             return []
         logger.info(f"Processing image, shape: {img.shape}")
 
-        # 2. find yellow box
         yellow_box = _find_yellow_box(img)
         if yellow_box is None:
             logger.error("Yellow box not found")
             return []
-        # 3. extract day (hybrid)
-        day = _extract_day_hybrid(img, yellow_box)
+
+        # Use deterministic extractor
+        day = _extract_day_deterministic(img, yellow_box, debug=self.debug)
         if day is None:
             logger.error("Could not extract day from yellow box")
-            # fallback to current day
+            # fallback to today's day
             day = datetime.now().day
             if day < 1 or day > 31:
                 day = 1
             logger.warning(f"Using fallback day: {day}")
 
-        # 4. build iso date
         try:
             slot_date = date(FIXED_YEAR, FIXED_MONTH, day)
             iso_date = slot_date.isoformat()
@@ -588,13 +504,11 @@ class NewFormatSlotParser:
             logger.error(f"Invalid date: {e}")
             return []
 
-        # 5. find time slots
         time_slots = _find_time_slots(img)
         if not time_slots:
             logger.warning(f"No time slots found for {iso_date}")
             return []
 
-        # 6. build result
         result = []
         for start_time, end_time in time_slots:
             slot = {
@@ -608,7 +522,7 @@ class NewFormatSlotParser:
         return result
 
 class MemorySlotParser:
-    """Парсер для обработки скриншотов из памяти."""
+    """Processor for screenshots from memory (backwards-compatible)."""
     def __init__(self, debug: bool = False):
         self.debug = debug
         self.parser = NewFormatSlotParser(debug=debug)
@@ -636,7 +550,7 @@ class MemorySlotParser:
             logger.error(f"Error: {e}")
             return []
 
-    def process_screenshot(self, image_bytes: BytesIO, is_last: bool=False) -> List[Dict]:
+    def process_screenshot(self, image_bytes: BytesIO, is_last: bool = False) -> List[Dict]:
         return self.process_screenshot_from_memory(image_bytes, is_last)
 
     def process_image(self, image_input: Any) -> List[Dict]:
@@ -690,7 +604,7 @@ class MemorySlotParser:
         return self.get_all_slots()
 
 class SlotParser:
-    """Парсер для папки со скриншотами."""
+    """Parser for folder of screenshots."""
     def __init__(self, base_path: str, debug: bool = False):
         self.base_path = base_path
         self.parser = NewFormatSlotParser(debug=debug)

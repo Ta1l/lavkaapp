@@ -39,7 +39,7 @@ export default function DayRow({
     const mainHeight = calculateHeight(slotsCount);
 
     return (
-        <div className="relative w-full mb-[15px] last:mb-0">
+        <div className="relative w-full mb-[15px] last:mb-0 px-[15px] pt-[30px]">
             {/* Фоновая синяя карточка, выглядывающая сверху на 30px */}
             <div 
                 className="absolute w-full rounded-[20px] -top-[30px] left-0"

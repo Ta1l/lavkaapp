@@ -30,16 +30,18 @@ export default function DayRow({
     const slots = day.slots || [];
     const slotsCount = slots.length;
     
-    // Рассчитываем высоту динамически
+    // Рассчитываем высоту динамически (можно подправить под дизайн)
     const calculateHeight = (count: number) => {
         if (count === 0) return 51;
+        // базовая высота + высота каждого слота
         return 10 + 14 + 17 + (count * 41) - 6 + 10;
     };
 
     const mainHeight = calculateHeight(slotsCount);
 
     return (
-        <div className="relative w-full mb-[15px] last:mb-0 px-[15px] pt-[30px]">
+        // <-- важное изменение: отступ между днями 5px (mb-[5px])
+        <div className="relative w-full mb-[5px] last:mb-0">
             {/* Фоновая синяя карточка, выглядывающая сверху на 30px */}
             <div 
                 className="absolute w-full rounded-[20px] -top-[30px] left-0"

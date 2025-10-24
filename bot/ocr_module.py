@@ -171,203 +171,110 @@ def _classify_digit_patch(patch_gray: np.ndarray) -> Tuple[int, float]:
         logger.debug(f"classify_digit_patch error: {e}")
         return (-1, 0.0)
 
-# --------- Deterministic extraction pipeline for day ---------
+# --------- NEW SIMPLIFIED extraction pipeline for day ---------
 def _extract_day_deterministic(img: np.ndarray, box: Tuple[int,int,int,int], debug: bool=False) -> Optional[int]:
     """
-    Deterministic pipeline:
-      - crop ROI exactly
-      - run several preprocessings (CLAHE, adaptive threshold, Otsu, invert)
-      - for each preprocess: find contours/components -> filter by size -> classify patches
-      - compose single-digit and two-digit candidates by spatial adjacency
-      - aggregate across preprocessings and pick consensus (most frequent / highest score)
-      - fallback to pytesseract if nothing found
+    Simplified extraction that actually works:
+    1. Extract ROI with small padding
+    2. Convert to grayscale
+    3. Upscale 4x for better OCR
+    4. Apply Otsu threshold with inversion (white digits on black background)
+    5. Small morphological cleanup
+    6. Try OCR with different configs
     """
     try:
-        x,y,w,h = box
-        pad = max(0, int(min(w,h) * 0.06))
-        x1, y1 = max(0, x-pad), max(0, y-pad)
-        x2, y2 = min(img.shape[1], x+w+pad), min(img.shape[0], y+h+pad)
+        x, y, w, h = box
+        
+        # Extract ROI with small padding
+        pad = 2
+        x1 = max(0, x - pad)
+        y1 = max(0, y - pad)
+        x2 = min(img.shape[1], x + w + pad)
+        y2 = min(img.shape[0], y + h + pad)
+        
         roi = img[y1:y2, x1:x2].copy()
         if roi.size == 0:
             logger.warning("Empty ROI")
             return None
-
-        # Preprocessing variants
-        candidates_all = []  # list of (num, score)
-        debug_info = []
-
-        def do_variant(gray: np.ndarray, variant_name: str):
-            """Process one grayscale variant: threshold, find contours, classify."""
-            local_candidates = []
-            # Apply several binarizations: adaptive, otsu, inverted variants
-            threshings = []
-            try:
-                # adaptive
-                thr_adap = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                                cv2.THRESH_BINARY_INV if gray.mean() > 127 else cv2.THRESH_BINARY_INV,
-                                                11, 2)
-                threshings.append(("adap", thr_adap))
-            except Exception:
-                pass
-            try:
-                # OTSU normal and inverted
-                _, thr_otsu = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-                thr_inv = cv2.bitwise_not(thr_otsu)
-                threshings.append(("otsu", thr_otsu))
-                threshings.append(("otsu_inv", thr_inv))
-            except Exception:
-                pass
-            # morphological cleanup for each threshold
-            kern = cv2.getStructuringElement(cv2.MORPH_RECT, (3,3))
-            for tname, thr in threshings:
-                try:
-                    thr_clean = cv2.morphologyEx(thr, cv2.MORPH_CLOSE, kern, iterations=1)
-                    thr_clean = cv2.morphologyEx(thr_clean, cv2.MORPH_OPEN, kern, iterations=1)
-                except Exception:
-                    thr_clean = thr
-                # find contours (digits are dark on bright or bright on dark depending)
-                cnts, _ = cv2.findContours(thr_clean, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                rects = []
-                H, W = thr_clean.shape
-                for cnt in cnts:
-                    x0,y0,w0,h0 = cv2.boundingRect(cnt)
-                    # filter by relative size: digit boxes are not tiny and not the whole box
-                    if w0 < 6 or h0 < 8:
-                        continue
-                    if w0 > W*0.9 and h0 > H*0.9:
-                        continue
-                    rects.append((x0,y0,w0,h0))
-                # if no rects found, try connected components
-                if not rects:
-                    try:
-                        nb_components, labels, stats, centroids = cv2.connectedComponentsWithStats(thr_clean, connectivity=8)
-                        for i in range(1, nb_components):
-                            x0,y0,w0,h0,area = stats[i]
-                            if w0 < 6 or h0 < 8 or area < 20:
-                                continue
-                            rects.append((x0,y0,w0,h0))
-                    except Exception:
-                        pass
-                # Merge overlapping rects (to avoid splitting digits)
-                rects = _merge_rects(rects)
-                # classify each rect
-                digit_entries = []
-                for (rx,ry,rw,rh) in rects:
-                    try:
-                        padc = 2
-                        xA = max(0, rx-padc); yA = max(0, ry-padc)
-                        xB = min(W, rx+rw+padc); yB = min(H, ry+rh+padc)
-                        patch = thr_clean[yA:yB, xA:xB]
-                        # For classification we want grayscale patch (not binary) to detect edges robustly
-                        # Map patch back to grayscale coordinates
-                        patch_gray = gray[yA:yB, xA:xB]
-                        # classify using edge templates
-                        d, s = _classify_digit_patch_from_gray(patch_gray)
-                        if d >= 0:
-                            digit_entries.append({"digit": d, "score": s, "x": xA, "w": xB-xA})
-                    except Exception:
-                        continue
-                # Now try to form numbers from digit_entries by proximity
-                if digit_entries:
-                    digit_entries.sort(key=lambda it: it["x"])
-                    # Single-digit candidates
-                    for de in digit_entries:
-                        local_candidates.append((de["digit"], de["score"]))
-                    # Two-digit candidates by neighbor combination
-                    for i in range(len(digit_entries)):
-                        for j in (i+1, i+2):
-                            if j >= len(digit_entries):
-                                break
-                            left = digit_entries[i]; right = digit_entries[j]
-                            dist = right["x"] - left["x"]
-                            # require reasonable proximity
-                            if dist < max(min(W*0.6, 120), 40):
-                                num = left["digit"]*10 + right["digit"]
-                                if 1 <= num <= 31:
-                                    score_sum = (left["score"] + right["score"]) / 2.0
-                                    local_candidates.append((num, score_sum))
-                # If nothing found within rects but thr had large connected area, try OCR fallback on thr area
-                if not local_candidates and _PYTESSERACT_AVAILABLE:
-                    try:
-                        ocr_text = pytesseract.image_to_string(thr_clean, config='-c tessedit_char_whitelist=0123456789/ ')
-                        nums = re.findall(r'\d{1,2}', ocr_text)
-                        for nstr in nums:
-                            n = int(nstr)
-                            if 1 <= n <= 31:
-                                local_candidates.append((n, 50.0))
-                    except Exception:
-                        pass
-                # collect local candidates for this threshold
-                if local_candidates:
-                    # log debug
-                    debug_info.append({"variant": variant_name, "threshold": tname, "found": list(local_candidates)})
-                else:
-                    debug_info.append({"variant": variant_name, "threshold": tname, "found": []})
-                candidates_all.extend(local_candidates)
-
-        # Generate grayscale variants: CLAHE on L channel + raw gray + contrast stretched
-        roi_gray_orig = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
-        # CLAHE variant
-        try:
-            lab = cv2.cvtColor(roi, cv2.COLOR_BGR2LAB)
-            l,a,b = cv2.split(lab)
-            clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))
-            l2 = clahe.apply(l)
-            lab2 = cv2.merge((l2,a,b))
-            roi_clahe = cv2.cvtColor(lab2, cv2.COLOR_LAB2BGR)
-            roi_clahe_gray = cv2.cvtColor(roi_clahe, cv2.COLOR_BGR2GRAY)
-        except Exception:
-            roi_clahe_gray = roi_gray_orig.copy()
-        # Contrast stretch variant
-        try:
-            p2, p98 = np.percentile(roi_gray_orig, (2,98))
-            roi_stretch = cv2.normalize(roi_gray_orig, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
-            roi_stretch = np.clip((roi_gray_orig - p2) * 255.0 / (p98 - p2 + 1e-6), 0, 255).astype(np.uint8)
-        except Exception:
-            roi_stretch = roi_gray_orig.copy()
-
-        # Run variants
-        do_variant(roi_gray_orig, "orig")
-        do_variant(roi_clahe_gray, "clahe")
-        do_variant(roi_stretch, "stretch")
-
-        if debug:
-            logger.debug(f"Deterministic extract debug_info: {debug_info}")
-
-        # aggregate candidates_all -> choose best by frequency and score
-        if not candidates_all:
-            # Last resort: direct OCR on ROI using pytesseract
-            if _PYTESSERACT_AVAILABLE:
-                try:
-                    txt = pytesseract.image_to_string(roi_gray_orig, config='-c tessedit_char_whitelist=0123456789/ ')
-                    nums = re.findall(r'\d{1,2}', txt)
-                    if nums:
-                        n = int(nums[0])
-                        if 1 <= n <= 31:
-                            logger.info(f"Fallback pytesseract found: {n}")
-                            return n
-                except Exception:
-                    pass
-            logger.warning("No candidates found by deterministic pipeline")
+        
+        # Convert to grayscale
+        gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+        
+        # CRITICAL: Upscale for better OCR (4x works well)
+        scale = 4
+        gray_large = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        
+        # Apply binary threshold with inversion (white digits on black background)
+        _, binary = cv2.threshold(gray_large, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        # Small morphological cleanup
+        kernel = np.ones((2, 2), np.uint8)
+        binary_clean = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=1)
+        
+        # Try OCR if available
+        if not _PYTESSERACT_AVAILABLE:
+            logger.warning("Tesseract not available, cannot extract day")
             return None
-
-        # Build score aggregation: for each candidate number accumulate counts and weighted score
-        agg = {}
-        for num, score in candidates_all:
-            rec = agg.setdefault(num, {"count":0, "score_sum":0.0})
-            rec["count"] += 1
-            rec["score_sum"] += float(score)
-        # compute final metric: prefer higher count, then higher average score, then larger numeric (to break ties)
-        sortable = []
-        for num, v in agg.items():
-            avg = v["score_sum"] / v["count"] if v["count"]>0 else 0.0
-            sortable.append((v["count"], avg, num))
-        sortable.sort(key=lambda t: (-t[0], -t[1], -t[2]))
-        best = sortable[0]
-        chosen_num = int(best[2])
-        logger.info(f"Deterministic candidates: { {k:v for k,v in agg.items()} }, selected: {chosen_num}")
-        return chosen_num
-
+        
+        # Try different Tesseract configurations
+        configs = [
+            '--psm 7 -c tessedit_char_whitelist=0123456789',   # Single text line
+            '--psm 8 -c tessedit_char_whitelist=0123456789',   # Single word
+            '--psm 13 -c tessedit_char_whitelist=0123456789',  # Raw line
+            '--psm 6 -c tessedit_char_whitelist=0123456789',   # Uniform block
+            '-c tessedit_char_whitelist=0123456789',           # Default
+        ]
+        
+        results = []
+        
+        for config in configs:
+            try:
+                text = pytesseract.image_to_string(binary_clean, config=config).strip()
+                if text and text.isdigit():
+                    num = int(text)
+                    if 1 <= num <= 31:
+                        results.append(num)
+                        logger.debug(f"OCR found: {num} with config: {config}")
+            except Exception as e:
+                logger.debug(f"OCR error with config {config}: {e}")
+        
+        # Also try on original size (sometimes works better for small numbers)
+        _, binary_small = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        for config in configs[:3]:  # Try first 3 configs on small version
+            try:
+                text = pytesseract.image_to_string(binary_small, config=config).strip()
+                if text and text.isdigit():
+                    num = int(text)
+                    if 1 <= num <= 31:
+                        results.append(num)
+                        logger.debug(f"OCR found (small): {num}")
+            except:
+                pass
+        
+        # Additionally try with different threshold values
+        for thresh_val in [100, 120, 140, 160]:
+            _, binary_test = cv2.threshold(gray_large, thresh_val, 255, cv2.THRESH_BINARY_INV)
+            try:
+                text = pytesseract.image_to_string(binary_test, config='--psm 8 -c tessedit_char_whitelist=0123456789').strip()
+                if text and text.isdigit():
+                    num = int(text)
+                    if 1 <= num <= 31:
+                        results.append(num)
+            except:
+                pass
+        
+        # Analyze results - pick most common
+        if results:
+            from collections import Counter
+            counter = Counter(results)
+            most_common = counter.most_common(1)[0][0]
+            logger.info(f"Day extraction results: {dict(counter)}, selected: {most_common}")
+            return most_common
+        
+        logger.warning("No valid day number found by OCR")
+        return None
+        
     except Exception as e:
         logger.error(f"Error in _extract_day_deterministic: {e}")
         return None

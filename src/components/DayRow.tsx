@@ -31,17 +31,14 @@ export default function DayRow({
     const slots = day.slots || [];
     const slotsCount = slots.length;
     
-    // Рассчитываем высоту динамически (можно подправить под дизайн)
     const calculateHeight = (count: number) => {
         if (count === 0) return 51;
-        // базовая высота + высота каждого слота
         return 10 + 14 + 17 + (count * 41) - 6 + 10;
     };
 
     const mainHeight = calculateHeight(slotsCount);
 
-    // Подготовим данные для утилиты: предполагается, что TimeSlot содержит startTime и endTime строки "HH:MM"
-    // Если структура иная — подкорректируй поля
+    // Подготовка слотов для утилиты (поддерживаем разные названия полей)
     const simpleSlots = (slots || []).map((s: TimeSlot) => ({
         startTime: (s as any).startTime ?? (s as any).start_time ?? "",
         endTime: (s as any).endTime ?? (s as any).end_time ?? "",
@@ -49,42 +46,47 @@ export default function DayRow({
 
     const totalHours = calculateDayHours(simpleSlots);
 
-    // Отобразим часы: если целое — без дробной части, иначе — с максимум 2 знаками
     const renderHoursText = (h: number) => {
-        if (h === 0) return "0 ч";
+        if (h === 0) return "";
         const isInt = Number.isInteger(h);
         return isInt ? `${h} ч` : `${h.toString().replace(/\.0+$/, "")} ч`;
     };
 
+    // vertical center inside visible blue area (30px) with text height 12px -> top = 9px
+    const blueVisibleTop = 30;
+    const textHeight = 12;
+    const textTop = Math.max(2, Math.round((blueVisibleTop - textHeight) / 2)); // fallback to 2px if needed
+
     return (
-        /**
-         * - mt-[30px] — резервируем пространство сверху для "выглядывающей" синей карточки
-         * - mb-[10px] — отступ между карточками 10px
-         * - last:mb-0 — у последней карточки отступ снизу убирается
-         * - overflow-visible — чтобы синяя часть не обрезалась
-         */
         <div className="relative w-full mt-[30px] mb-[10px] last:mb-0 overflow-visible">
-            {/* Фоновая синяя карточка, выглядывающая сверху на 30px */}
+            {/* Синяя карточка (за желтой), выглядывает на 30px */}
             <div 
                 className="absolute w-full rounded-[20px] -top-[30px] left-0"
                 style={{ 
                     backgroundColor: '#2C00C9E5',
-                    // высота синей карточки = высота желтой + 30 (чтобы она выглядывала на 30px)
                     height: `${mainHeight + 30}px`,
                     zIndex: 0
                 }}
             >
-                {/* Число часов в левом верхнем углу синей карточки
-                    Отступы сверху и слева = 1px; стиль совпадает с остальным текстом (font-bold font-sans text-[14px]) */}
-                <p
-                    className="absolute top-[1px] left-[1px] text-[14px] font-bold font-sans leading-normal text-white"
-                    style={{ zIndex: 2 }}
-                >
-                    {renderHoursText(totalHours)}
-                </p>
+                {/* Показываем часы только если есть > 0 */}
+                {totalHours > 0 && (
+                    <p
+                        // позиционируем по правому краю (2px) и вертикально центрируем в видимой синей области
+                        className="absolute font-sans font-bold leading-none text-black"
+                        style={{
+                            top: `${textTop}px`,       // центрируем в видимой синей части (или 2px)
+                            right: "2px",              // отступ справа 2px
+                            fontSize: "12px",
+                            lineHeight: "12px",
+                            zIndex: 2,
+                        }}
+                    >
+                        {renderHoursText(totalHours)}
+                    </p>
+                )}
             </div>
             
-            {/* Основная желтая карточка дня */}
+            {/* Желтая карточка */}
             <div 
                 className="relative w-full transition-all duration-300 rounded-[20px]"
                 style={{ 
@@ -97,7 +99,6 @@ export default function DayRow({
                     {day.formattedDate}
                 </p>
 
-                {/* Кнопки управления днем - показываем только для владельца */}
                 {isOwner && (
                     <div className="absolute top-[7px] right-[15px] flex items-center gap-2 z-20">
                         <button

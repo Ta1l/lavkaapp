@@ -40,13 +40,20 @@ export default function DayRow({
     const mainHeight = calculateHeight(slotsCount);
 
     return (
-        // <-- важное изменение: отступ между днями 5px (mb-[5px])
-        <div className="relative w-full mb-[5px] last:mb-0">
+        /**
+         * ВАЖНО:
+         * - first:mt-0 — чтобы у первого элемента не было лишнего отступа сверху
+         * - mt-[30px] — резервируем пространство для "выглядывающей" синей карточки
+         * - mb-[5px] — отступ между днями 5px
+         * - overflow-visible — чтобы синий элемент, у которого отрицательный top, не обрезался
+         */
+        <div className="relative w-full first:mt-0 mt-[30px] mb-[5px] last:mb-0 overflow-visible">
             {/* Фоновая синяя карточка, выглядывающая сверху на 30px */}
             <div 
                 className="absolute w-full rounded-[20px] -top-[30px] left-0"
                 style={{ 
                     backgroundColor: '#2C00C9E5',
+                    // высота синей карточки = высота желтой + 30 (чтобы она выглядывала на 30px)
                     height: `${mainHeight + 30}px`,
                     zIndex: 0
                 }}
@@ -58,7 +65,8 @@ export default function DayRow({
                 style={{ 
                     backgroundColor: '#E2CF00',
                     minHeight: `${mainHeight}px`,
-                    zIndex: 1
+                    zIndex: 1,
+                    // чтобы синяя карточка визуально совпадала по ширине с желтой — оба используют w-full в одном контейнере
                 }}
             >
                 <p className="absolute top-[10px] left-[15px] text-[14px] font-bold font-sans leading-normal text-black">

@@ -75,8 +75,8 @@ export default function DayRow({
                         className="absolute font-sans font-bold leading-none text-black"
                         style={{
                             top: `${textTop}px`,       // центрируем в видимой синей части (или 2px)
-                            right: "2px",              // отступ справа 2px
-                            fontSize: "12px",
+                            right: "6px",              // отступ справа 2px
+                            fontSize: "13px",
                             lineHeight: "12px",
                             zIndex: 2,
                         }}
@@ -90,7 +90,7 @@ export default function DayRow({
             <div 
                 className="relative w-full transition-all duration-300 rounded-[20px]"
                 style={{ 
-                    backgroundColor: '#E2CF00',
+                    backgroundColor: '#E2CF00E5',
                     minHeight: `${mainHeight}px`,
                     zIndex: 1,
                 }}

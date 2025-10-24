@@ -41,13 +41,12 @@ export default function DayRow({
 
     return (
         /**
-         * ВАЖНО:
-         * - first:mt-0 — чтобы у первого элемента не было лишнего отступа сверху
-         * - mt-[30px] — резервируем пространство для "выглядывающей" синей карточки
-         * - mb-[5px] — отступ между днями 5px
-         * - overflow-visible — чтобы синий элемент, у которого отрицательный top, не обрезался
+         * - mt-[30px] — резервируем пространство сверху для "выглядывающей" синей карточки (теперь и для первой)
+         * - mb-[10px] — отступ между карточками 10px
+         * - last:mb-0 — у последней карточки отступ снизу убирается (как и раньше)
+         * - overflow-visible — чтобы синяя часть не обрезалась
          */
-        <div className="relative w-full first:mt-0 mt-[30px] mb-[5px] last:mb-0 overflow-visible">
+        <div className="relative w-full mt-[30px] mb-[10px] last:mb-0 overflow-visible">
             {/* Фоновая синяя карточка, выглядывающая сверху на 30px */}
             <div 
                 className="absolute w-full rounded-[20px] -top-[30px] left-0"
@@ -66,7 +65,6 @@ export default function DayRow({
                     backgroundColor: '#E2CF00',
                     minHeight: `${mainHeight}px`,
                     zIndex: 1,
-                    // чтобы синяя карточка визуально совпадала по ширине с желтой — оба используют w-full в одном контейнере
                 }}
             >
                 <p className="absolute top-[10px] left-[15px] text-[14px] font-bold font-sans leading-normal text-black">

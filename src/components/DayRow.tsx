@@ -5,6 +5,7 @@
 import React from "react";
 import TimeSlotComponent from "./TimeSlotComponent";
 import { Day, TimeSlot } from "@/types/shifts";
+import { calculateDayHours } from "@/utils/calcDayHours";
 
 interface DayRowProps {
     day: Day;
@@ -39,11 +40,27 @@ export default function DayRow({
 
     const mainHeight = calculateHeight(slotsCount);
 
+    // Подготовим данные для утилиты: предполагается, что TimeSlot содержит startTime и endTime строки "HH:MM"
+    // Если структура иная — подкорректируй поля
+    const simpleSlots = (slots || []).map((s: TimeSlot) => ({
+        startTime: (s as any).startTime ?? (s as any).start_time ?? "",
+        endTime: (s as any).endTime ?? (s as any).end_time ?? "",
+    }));
+
+    const totalHours = calculateDayHours(simpleSlots);
+
+    // Отобразим часы: если целое — без дробной части, иначе — с максимум 2 знаками
+    const renderHoursText = (h: number) => {
+        if (h === 0) return "0 ч";
+        const isInt = Number.isInteger(h);
+        return isInt ? `${h} ч` : `${h.toString().replace(/\.0+$/, "")} ч`;
+    };
+
     return (
         /**
-         * - mt-[30px] — резервируем пространство сверху для "выглядывающей" синей карточки (теперь и для первой)
+         * - mt-[30px] — резервируем пространство сверху для "выглядывающей" синей карточки
          * - mb-[10px] — отступ между карточками 10px
-         * - last:mb-0 — у последней карточки отступ снизу убирается (как и раньше)
+         * - last:mb-0 — у последней карточки отступ снизу убирается
          * - overflow-visible — чтобы синяя часть не обрезалась
          */
         <div className="relative w-full mt-[30px] mb-[10px] last:mb-0 overflow-visible">
@@ -56,7 +73,16 @@ export default function DayRow({
                     height: `${mainHeight + 30}px`,
                     zIndex: 0
                 }}
-            />
+            >
+                {/* Число часов в левом верхнем углу синей карточки
+                    Отступы сверху и слева = 1px; стиль совпадает с остальным текстом (font-bold font-sans text-[14px]) */}
+                <p
+                    className="absolute top-[1px] left-[1px] text-[14px] font-bold font-sans leading-normal text-white"
+                    style={{ zIndex: 2 }}
+                >
+                    {renderHoursText(totalHours)}
+                </p>
+            </div>
             
             {/* Основная желтая карточка дня */}
             <div 

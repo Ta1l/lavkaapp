@@ -2,10 +2,11 @@
 
 "use client";
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import TimeSlotComponent from "./TimeSlotComponent";
 import { Day, TimeSlot } from "@/types/shifts";
 import { calculateDayHours } from "@/utils/calcDayHours";
+import { subscribe as subscribeWeather, getLatestWeatherText } from "@/utils/weather";
 
 interface DayRowProps {
     day: Day;
@@ -52,10 +53,27 @@ export default function DayRow({
         return isInt ? `${h} ч` : `${h.toString().replace(/\.0+$/, "")} ч`;
     };
 
-    // vertical center inside visible blue area (30px) with text height 12px -> top = 9px
+    // vertical center inside visible blue area (30px) with text height 13px -> top = 8.5 -> round to 8 or 9
     const blueVisibleTop = 30;
-    const textHeight = 12;
-    const textTop = Math.max(2, Math.round((blueVisibleTop - textHeight) / 2)); // fallback to 2px if needed
+    const weatherFontSize = 13;
+    const weatherTextHeight = 13; // px
+    const weatherTextTop = Math.max(2, Math.round((blueVisibleTop - weatherTextHeight) / 2));
+
+    // часы: левый верхний угол (1px/1px) по старому требованию
+    const hoursTop = 1;
+    const hoursLeft = 1;
+
+    // Weather text from shared weather util: subscribe for updates
+    const [weatherText, setWeatherText] = useState<string | null>(() => getLatestWeatherText() ?? null);
+
+    useEffect(() => {
+        const unsub = subscribeWeather((txt: string | null) => {
+            setWeatherText(txt);
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+        };
+    }, []);
 
     return (
         <div className="relative w-full mt-[30px] mb-[10px] last:mb-0 overflow-visible">
@@ -68,20 +86,40 @@ export default function DayRow({
                     zIndex: 0
                 }}
             >
-                {/* Показываем часы только если есть > 0 */}
+                {/* Часы рабочего времени — в левом верхнем углу (показываем только если > 0) */}
                 {totalHours > 0 && (
                     <p
-                        // позиционируем по правому краю (2px) и вертикально центрируем в видимой синей области
                         className="absolute font-sans font-bold leading-none text-black"
                         style={{
-                            top: `${textTop}px`,       // центрируем в видимой синей части (или 2px)
-                            right: "6px",              // отступ справа 2px
-                            fontSize: "13px",
+                            top: `${hoursTop}px`,
+                            left: `${hoursLeft}px`,
+                            fontSize: "12px",
                             lineHeight: "12px",
                             zIndex: 2,
                         }}
                     >
                         {renderHoursText(totalHours)}
+                    </p>
+                )}
+
+                {/* Прогноз погоды — по центру видимой синей области вертикально + отступ справа 3px */}
+                {weatherText && (
+                    <p
+                        className="absolute font-sans font-bold leading-none text-black text-right"
+                        style={{
+                            top: `${weatherTextTop}px`,
+                            right: "3px",
+                            fontSize: `${weatherFontSize}px`,
+                            lineHeight: `${weatherTextHeight}px`,
+                            zIndex: 2,
+                            maxWidth: "60%", // запас, чтобы не вылезало за границы; при необходимости поправь
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                        }}
+                        title={weatherText}
+                    >
+                        {weatherText}
                     </p>
                 )}
             </div>

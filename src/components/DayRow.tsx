@@ -19,26 +19,42 @@ interface DayRowProps {
     isOwner: boolean;
 }
 
-// Вспомогательная: пытаемся получить ISO date (YYYY-MM-DD) из day.
-// Поддерживаем распространённые поля: day.date, day.isoDate, day.iso, day.time, day.startDate
-// Если ничего нет — вернём null (тогда погода не покажется).
+/**
+ * Универсальная функция: получает day (объект Day из types/shifts)
+ * и пытается вернуть ISO дату "YYYY-MM-DD".
+ * Поддерживаются:
+ *  - day.date как Date объект
+ *  - day.date как timestamp number
+ *  - day.date как строка "YYYY-MM-DD..."
+ *  - поля isoDate / iso / time / startDate / formattedDate
+ */
 function getIsoDateFromDay(day: any): string | null {
     if (!day) return null;
-    // common candidates
-    if (typeof day.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day.date)) return day.date;
-    if (typeof day.isoDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.isoDate)) return day.isoDate.substring(0,10);
-    if (typeof day.iso === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.iso)) return day.iso.substring(0,10);
-    if (typeof day.time === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.time)) return day.time.substring(0,10);
-    if (typeof day.startDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.startDate)) return day.startDate.substring(0,10);
-    // if day has a numeric timestamp
-    if (typeof day.timestamp === "number") {
-        const d = new Date(day.timestamp);
-        return d.toISOString().slice(0,10);
+
+    // 1) date как Date
+    if (day.date instanceof Date) {
+        return day.date.toISOString().slice(0, 10);
     }
-    // as last attempt, if formattedDate already contains full ISO-like yyyy-mm-dd
-    if (typeof day.formattedDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.formattedDate)) {
-        return day.formattedDate.substring(0,10);
+
+    // 2) date как timestamp number
+    if (typeof day.date === "number") {
+        return new Date(day.date).toISOString().slice(0, 10);
     }
+
+    // 3) date как строка 'YYYY-MM-DD...' (например ISO)
+    if (typeof day.date === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.date)) {
+        return day.date.substring(0, 10);
+    }
+
+    // 4) другие поля строки
+    const candidates = ["isoDate", "iso", "time", "startDate", "formattedDate", "dateStr"];
+    for (const key of candidates) {
+        const val = day[key];
+        if (typeof val === "string" && /^\d{4}-\d{2}-\d{2}/.test(val)) {
+            return val.substring(0, 10);
+        }
+    }
+
     return null;
 }
 
@@ -76,24 +92,22 @@ export default function DayRow({
         return isInt ? `${h} ч` : `${h.toString().replace(/\.0+$/, "")} ч`;
     };
 
-    // Высота видимой синей области = 30px
+    // Синия видимая область = 30px; центрируем вертикально
     const blueVisibleHeight = 30;
-    const weatherFontSize = 13; // размер шрифта для погоды
-    const hoursFontSize = 13;   // размер шрифта для часов
-    const weatherTop = Math.max(2, Math.round((blueVisibleHeight - weatherFontSize) / 2));
-    const hoursTop = Math.max(2, Math.round((blueVisibleHeight - hoursFontSize) / 2));
+    const labelFontSize = 13;
+    const labelTop = Math.max(2, Math.round((blueVisibleHeight - labelFontSize) / 2));
 
     // Получаем ISO дату карточки (YYYY-MM-DD)
     const isoDate = getIsoDateFromDay(day);
 
-    // Локальное состояние прогноза для этой карточки
+    // Состояние погоды для этой карточки
     const [weatherText, setWeatherText] = useState<string | null>(() => {
         if (!isoDate) return null;
         return getWeatherForDate(isoDate);
     });
 
     useEffect(() => {
-        // подпишемся на глобальные обновления прогноза (получаем полный map)
+        // подпишемся на глобальные обновления прогноза (получаем полный dailyMap)
         const unsub = subscribeWeather((dailyMap: Record<string, string>) => {
             if (!isoDate) return;
             const val = dailyMap ? dailyMap[isoDate] ?? null : null;
@@ -115,20 +129,20 @@ export default function DayRow({
                     zIndex: 0
                 }}
             >
-                {/* Погода — центр видимой синей области, отступ слева 2px */}
+                {/* Погода — по центру видимой синей области, отступ слева 2px */}
                 {weatherText && (
                     <p
                         className="absolute font-sans font-bold leading-none text-black"
                         style={{
-                            top: `${weatherTop}px`,
-                            left: "2px",                 // требуемое смещение слева
-                            fontSize: `${weatherFontSize}px`,
-                            lineHeight: `${weatherFontSize}px`,
+                            top: `${labelTop}px`,
+                            left: "2px",
+                            fontSize: `${labelFontSize}px`,
+                            lineHeight: `${labelFontSize}px`,
                             zIndex: 2,
-                            maxWidth: "60%",
                             whiteSpace: "nowrap",
                             overflow: "hidden",
                             textOverflow: "ellipsis",
+                            maxWidth: "60%",
                             textAlign: "left",
                         }}
                         title={weatherText}
@@ -137,15 +151,15 @@ export default function DayRow({
                     </p>
                 )}
 
-                {/* Результат calcDayHours — центр видимой синей области, отступ справа 2px */}
+                {/* Результат calcDayHours — по центру видимой синей области, отступ справа 2px */}
                 {totalHours > 0 && (
                     <p
                         className="absolute font-sans font-bold leading-none text-black"
                         style={{
-                            top: `${hoursTop}px`,
-                            right: "2px",               // требуемое смещение справа
-                            fontSize: `${hoursFontSize}px`,
-                            lineHeight: `${hoursFontSize}px`,
+                            top: `${labelTop}px`,
+                            right: "2px",
+                            fontSize: `${labelFontSize}px`,
+                            lineHeight: `${labelFontSize}px`,
                             zIndex: 2,
                             whiteSpace: "nowrap",
                         }}

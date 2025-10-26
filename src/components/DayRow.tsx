@@ -6,7 +6,7 @@ import React, { useEffect, useState } from "react";
 import TimeSlotComponent from "./TimeSlotComponent";
 import { Day, TimeSlot } from "@/types/shifts";
 import { calculateDayHours } from "@/utils/calcDayHours";
-import { subscribe as subscribeWeather, getLatestWeatherText } from "@/utils/weather";
+import { subscribe as subscribeWeather, getWeatherForDate } from "@/utils/weather";
 
 interface DayRowProps {
     day: Day;
@@ -17,6 +17,29 @@ interface DayRowProps {
     onAddSlot: (day: Day) => void;
     onDeleteDaySlots: (day: Day) => void;
     isOwner: boolean;
+}
+
+// Вспомогательная: пытаемся получить ISO date (YYYY-MM-DD) из day.
+// Поддерживаем распространённые поля: day.date, day.isoDate, day.iso, day.time, day.startDate
+// Если ничего нет — вернём null (тогда погода не покажется).
+function getIsoDateFromDay(day: any): string | null {
+    if (!day) return null;
+    // common candidates
+    if (typeof day.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(day.date)) return day.date;
+    if (typeof day.isoDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.isoDate)) return day.isoDate.substring(0,10);
+    if (typeof day.iso === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.iso)) return day.iso.substring(0,10);
+    if (typeof day.time === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.time)) return day.time.substring(0,10);
+    if (typeof day.startDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.startDate)) return day.startDate.substring(0,10);
+    // if day has a numeric timestamp
+    if (typeof day.timestamp === "number") {
+        const d = new Date(day.timestamp);
+        return d.toISOString().slice(0,10);
+    }
+    // as last attempt, if formattedDate already contains full ISO-like yyyy-mm-dd
+    if (typeof day.formattedDate === "string" && /^\d{4}-\d{2}-\d{2}/.test(day.formattedDate)) {
+        return day.formattedDate.substring(0,10);
+    }
+    return null;
 }
 
 export default function DayRow({
@@ -53,27 +76,33 @@ export default function DayRow({
         return isInt ? `${h} ч` : `${h.toString().replace(/\.0+$/, "")} ч`;
     };
 
-    // vertical center inside visible blue area (30px) with text height 13px -> top = 8.5 -> round to 8 or 9
-    const blueVisibleTop = 30;
-    const weatherFontSize = 13;
-    const weatherTextHeight = 13; // px
-    const weatherTextTop = Math.max(2, Math.round((blueVisibleTop - weatherTextHeight) / 2));
+    // Высота видимой синей области = 30px
+    const blueVisibleHeight = 30;
+    const weatherFontSize = 13; // размер шрифта для погоды
+    const hoursFontSize = 13;   // размер шрифта для часов
+    const weatherTop = Math.max(2, Math.round((blueVisibleHeight - weatherFontSize) / 2));
+    const hoursTop = Math.max(2, Math.round((blueVisibleHeight - hoursFontSize) / 2));
 
-    // часы: левый верхний угол (1px/1px) по старому требованию
-    const hoursTop = 1;
-    const hoursLeft = 1;
+    // Получаем ISO дату карточки (YYYY-MM-DD)
+    const isoDate = getIsoDateFromDay(day);
 
-    // Weather text from shared weather util: subscribe for updates
-    const [weatherText, setWeatherText] = useState<string | null>(() => getLatestWeatherText() ?? null);
+    // Локальное состояние прогноза для этой карточки
+    const [weatherText, setWeatherText] = useState<string | null>(() => {
+        if (!isoDate) return null;
+        return getWeatherForDate(isoDate);
+    });
 
     useEffect(() => {
-        const unsub = subscribeWeather((txt: string | null) => {
-            setWeatherText(txt);
+        // подпишемся на глобальные обновления прогноза (получаем полный map)
+        const unsub = subscribeWeather((dailyMap: Record<string, string>) => {
+            if (!isoDate) return;
+            const val = dailyMap ? dailyMap[isoDate] ?? null : null;
+            setWeatherText(val);
         });
         return () => {
-            if (typeof unsub === "function") unsub();
+            try { unsub(); } catch (e) { /* ignore */ }
         };
-    }, []);
+    }, [isoDate]);
 
     return (
         <div className="relative w-full mt-[30px] mb-[10px] last:mb-0 overflow-visible">
@@ -86,40 +115,43 @@ export default function DayRow({
                     zIndex: 0
                 }}
             >
-                {/* Часы рабочего времени — в левом верхнем углу (показываем только если > 0) */}
+                {/* Погода — центр видимой синей области, отступ слева 2px */}
+                {weatherText && (
+                    <p
+                        className="absolute font-sans font-bold leading-none text-black"
+                        style={{
+                            top: `${weatherTop}px`,
+                            left: "2px",                 // требуемое смещение слева
+                            fontSize: `${weatherFontSize}px`,
+                            lineHeight: `${weatherFontSize}px`,
+                            zIndex: 2,
+                            maxWidth: "60%",
+                            whiteSpace: "nowrap",
+                            overflow: "hidden",
+                            textOverflow: "ellipsis",
+                            textAlign: "left",
+                        }}
+                        title={weatherText}
+                    >
+                        {weatherText}
+                    </p>
+                )}
+
+                {/* Результат calcDayHours — центр видимой синей области, отступ справа 2px */}
                 {totalHours > 0 && (
                     <p
                         className="absolute font-sans font-bold leading-none text-black"
                         style={{
                             top: `${hoursTop}px`,
-                            left: `${hoursLeft}px`,
-                            fontSize: "12px",
-                            lineHeight: "12px",
+                            right: "2px",               // требуемое смещение справа
+                            fontSize: `${hoursFontSize}px`,
+                            lineHeight: `${hoursFontSize}px`,
                             zIndex: 2,
+                            whiteSpace: "nowrap",
                         }}
+                        title={renderHoursText(totalHours)}
                     >
                         {renderHoursText(totalHours)}
-                    </p>
-                )}
-
-                {/* Прогноз погоды — по центру видимой синей области вертикально + отступ справа 3px */}
-                {weatherText && (
-                    <p
-                        className="absolute font-sans font-bold leading-none text-black text-right"
-                        style={{
-                            top: `${weatherTextTop}px`,
-                            right: "3px",
-                            fontSize: `${weatherFontSize}px`,
-                            lineHeight: `${weatherTextHeight}px`,
-                            zIndex: 2,
-                            maxWidth: "60%", // запас, чтобы не вылезало за границы; при необходимости поправь
-                            whiteSpace: "nowrap",
-                            overflow: "hidden",
-                            textOverflow: "ellipsis",
-                        }}
-                        title={weatherText}
-                    >
-                        {weatherText}
                     </p>
                 )}
             </div>
